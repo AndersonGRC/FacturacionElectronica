@@ -1,0 +1,171 @@
+{% extends "ui/base.html" %}
+{% block title %}Factura {{ factura.numero_factura or factura.id[:8] }}{% endblock %}
+{% block breadcrumb %}
+  <a href="{{ url_for('ui.facturas') }}">Facturas</a> /
+  {{ factura.numero_factura or factura.referencia_pedido }}
+{% endblock %}
+
+{% block content %}
+<div class="row g-4">
+
+  <!-- Columna izquierda: datos -->
+  <div class="col-lg-8">
+    <div class="card mb-3">
+      <div class="card-header bg-white d-flex align-items-center">
+        <span class="fw-semibold">Datos de la Factura</span>
+        <span class="ms-auto badge badge-{{ factura.estado }} fs-6">{{ factura.estado }}</span>
+      </div>
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-6">
+            <div class="small text-muted">Referencia Pedido</div>
+            <div class="fw-semibold font-monospace">{{ factura.referencia_pedido }}</div>
+          </div>
+          <div class="col-6">
+            <div class="small text-muted">Número de Factura</div>
+            <div class="fw-semibold">{{ factura.numero_factura or '—' }}</div>
+          </div>
+          <div class="col-12">
+            <div class="small text-muted">CUFE</div>
+            {% if factura.cufe %}
+            <div class="input-group input-group-sm">
+              <code class="form-control bg-light small">{{ factura.cufe }}</code>
+              <button class="btn btn-outline-secondary copy-btn" data-value="{{ factura.cufe }}">
+                <i class="bi bi-clipboard"></i>
+              </button>
+            </div>
+            {% else %}<div class="text-muted">—</div>{% endif %}
+          </div>
+          <div class="col-6">
+            <div class="small text-muted">Tenant</div>
+            <div>{{ factura.tenant_nombre }}</div>
+          </div>
+          <div class="col-6">
+            <div class="small text-muted">Intentos</div>
+            <div>{{ factura.intentos }}</div>
+          </div>
+          <div class="col-6">
+            <div class="small text-muted">Creado</div>
+            <div class="small">{{ factura.creado_en }}</div>
+          </div>
+          <div class="col-6">
+            <div class="small text-muted">Actualizado</div>
+            <div class="small">{{ factura.actualizado_en }}</div>
+          </div>
+          {% if factura.procesar_en %}
+          <div class="col-12">
+            <div class="alert {% if factura.estado == 'PENDIENTE' %}alert-warning{% else %}alert-light{% endif %} py-2 mb-0 small d-flex align-items-center gap-3">
+              <div>
+                <i class="bi bi-clock me-1"></i>
+                <strong>Envío programado:</strong> {{ factura.procesar_en }}
+              </div>
+              {% if factura.estado == 'PENDIENTE' and not es_tenant %}
+              <div class="ms-auto d-flex gap-2">
+                <form method="POST" action="{{ url_for('ui.factura_enviar_ahora', factura_id=factura.id) }}"
+                      onsubmit="return confirm('¿Enviar AHORA a la DIAN? Esta acción es irreversible.')">
+                  <button class="btn btn-sm btn-warning">
+                    <i class="bi bi-send me-1"></i>Enviar ahora
+                  </button>
+                </form>
+                <form method="POST" action="{{ url_for('ui.factura_cancelar', factura_id=factura.id) }}"
+                      onsubmit="return confirm('¿Cancelar esta factura? No se enviará a la DIAN.')">
+                  <button class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-x-circle me-1"></i>Cancelar
+                  </button>
+                </form>
+              </div>
+              {% endif %}
+            </div>
+          </div>
+          {% endif %}
+          {% if factura.error_mensaje %}
+          <div class="col-12">
+            <div class="alert alert-danger py-2 mb-0 small">
+              <i class="bi bi-exclamation-triangle me-1"></i>
+              <strong>Error:</strong> {{ factura.error_mensaje }}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Archivos generados -->
+    <div class="card mb-3">
+      <div class="card-header bg-white fw-semibold">
+        <i class="bi bi-files me-2"></i>Archivos Generados
+      </div>
+      <ul class="list-group list-group-flush">
+        <li class="list-group-item d-flex align-items-center small">
+          <i class="bi bi-file-code me-2 text-primary"></i>
+          <span>XML Firmado</span>
+          {% if factura.xml_path %}
+            <code class="ms-auto text-muted">{{ factura.xml_path.split('/')[-1] }}</code>
+            <a href="{{ url_for('ui.descargar_archivo', factura_id=factura.id, tipo='xml') }}"
+               class="ms-2 btn btn-sm btn-outline-primary">
+              <i class="bi bi-download"></i>
+            </a>
+          {% else %}<span class="ms-auto text-muted">No generado</span>{% endif %}
+        </li>
+        <li class="list-group-item d-flex align-items-center small">
+          <i class="bi bi-file-earmark-check me-2 text-success"></i>
+          <span>ApplicationResponse DIAN</span>
+          {% if factura.response_path %}
+            <code class="ms-auto text-muted">{{ factura.response_path.split('/')[-1] }}</code>
+            <a href="{{ url_for('ui.descargar_archivo', factura_id=factura.id, tipo='response') }}"
+               class="ms-2 btn btn-sm btn-outline-success">
+              <i class="bi bi-download"></i>
+            </a>
+          {% else %}<span class="ms-auto text-muted">No generado</span>{% endif %}
+        </li>
+        <li class="list-group-item d-flex align-items-center small text-muted">
+          <i class="bi bi-file-earmark-pdf me-2"></i>
+          <span>PDF Representación</span>
+          <span class="ms-auto badge bg-light text-dark">Fase 2</span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- JSON payload -->
+    <div class="card">
+      <div class="card-header bg-white fw-semibold" role="button"
+           data-bs-toggle="collapse" data-bs-target="#payloadCollapse">
+        <i class="bi bi-braces me-2"></i>JSON de Entrada
+        <i class="bi bi-chevron-down ms-auto"></i>
+      </div>
+      <div id="payloadCollapse" class="collapse">
+        <div class="card-body p-0">
+          <pre class="mb-0 p-3 bg-light small" style="max-height:300px;overflow-y:auto">{{ factura.datos_json | tojson(indent=2) }}</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Columna derecha: audit log -->
+  <div class="col-lg-4">
+    <div class="card">
+      <div class="card-header bg-white fw-semibold">
+        <i class="bi bi-clock-history me-2"></i>Audit Log
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for ev in eventos %}
+        <li class="list-group-item py-2">
+          <div class="d-flex align-items-start">
+            <span class="badge badge-{{ ev.evento }} me-2 mt-1" style="font-size:.65rem">
+              {{ ev.evento }}
+            </span>
+            <div>
+              <div class="small">{{ ev.detalle or '' }}</div>
+              <div class="text-muted" style="font-size:.7rem">{{ ev.creado_en }}</div>
+            </div>
+          </div>
+        </li>
+        {% else %}
+        <li class="list-group-item text-center text-muted py-3 small">Sin eventos</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

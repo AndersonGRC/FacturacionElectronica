@@ -1,0 +1,66 @@
+{% extends "ui/base.html" %}
+{% block title %}Tenants{% endblock %}
+{% block breadcrumb %}Tenants / Clientes{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4">
+  <h5 class="fw-bold mb-0">Clientes del Microservicio</h5>
+  <a href="{{ url_for('ui.tenant_nuevo') }}" class="ms-auto btn btn-primary">
+    <i class="bi bi-plus-lg me-1"></i>Nuevo Tenant
+  </a>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Empresa</th><th>NIT</th><th>Ambiente</th><th>Prefijo</th>
+          <th>Consecutivo</th><th>Cert.</th><th>Estado</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tenants %}
+        <tr>
+          <td>
+            <div class="fw-semibold">{{ t.nombre }}</div>
+            <div class="text-muted small">{{ t.razon_social }}</div>
+          </td>
+          <td class="font-monospace small">{{ t.nit }}</td>
+          <td>
+            <span class="badge {% if t.ambiente == 'produccion' %}bg-danger{% else %}bg-info text-dark{% endif %}">
+              {{ t.ambiente }}
+            </span>
+          </td>
+          <td><code>{{ t.prefijo or '—' }}</code></td>
+          <td class="text-center">{{ t.consecutivo_actual }}</td>
+          <td class="text-center">
+            {% if t.cert_path %}
+              <i class="bi bi-check-circle-fill text-success" title="Certificado cargado"></i>
+            {% else %}
+              <i class="bi bi-x-circle-fill text-danger" title="Sin certificado"></i>
+            {% endif %}
+          </td>
+          <td>
+            <span class="badge {% if t.activo %}bg-success{% else %}bg-secondary{% endif %}">
+              {{ 'Activo' if t.activo else 'Inactivo' }}
+            </span>
+          </td>
+          <td>
+            <a href="{{ url_for('ui.tenant_detalle', tenant_id=t.id) }}"
+               class="btn btn-sm btn-outline-primary">
+              <i class="bi bi-pencil"></i> Editar
+            </a>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="text-center text-muted py-5">
+          Sin tenants registrados.
+          <a href="{{ url_for('ui.tenant_nuevo') }}">Crear el primero</a>
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

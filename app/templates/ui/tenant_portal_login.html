@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portal Tributario — Acceso</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    body { background: #f0f2f5; }
+    .login-card { max-width: 420px; margin: 80px auto; }
+    .login-header {
+      background: #198754;
+      color: #fff;
+      border-radius: 10px 10px 0 0;
+      padding: 32px 32px 24px;
+      text-align: center;
+    }
+    .login-header i { font-size: 2.8rem; opacity: .9; }
+    .login-header h4 { font-weight: 700; margin: 12px 0 4px; }
+    .login-header p { font-size: .85rem; opacity: .8; margin: 0; }
+    .login-body { background: #fff; border-radius: 0 0 10px 10px; padding: 32px; box-shadow: 0 4px 20px rgba(0,0,0,.10); }
+  </style>
+</head>
+<body>
+<div class="login-card">
+  <div class="login-header">
+    <i class="bi bi-building-check"></i>
+    <h4>Portal Tributario</h4>
+    <p>Facturación Electrónica DIAN</p>
+  </div>
+  <div class="login-body">
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}
+      <div class="alert alert-{{ cat }} py-2 small">{{ msg }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    <form method="POST" action="{{ url_for('ui.tenant_login') }}">
+      <div class="mb-3">
+        <label class="form-label small fw-semibold">Usuario</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-person"></i></span>
+          <input type="text" name="usuario" class="form-control"
+                 placeholder="usuario@empresa" autocomplete="username" required autofocus>
+        </div>
+      </div>
+      <div class="mb-4">
+        <label class="form-label small fw-semibold">Contraseña</label>
+        <div class="input-group">
+          <span class="input-group-text"><i class="bi bi-lock"></i></span>
+          <input type="password" name="password" class="form-control"
+                 placeholder="••••••••" autocomplete="current-password" required>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-success w-100 fw-semibold">
+        <i class="bi bi-box-arrow-in-right me-2"></i>Ingresar
+      </button>
+    </form>
+
+    <hr class="my-4">
+    <p class="text-center text-muted small mb-0">
+      <i class="bi bi-headset me-1"></i>¿Problemas para ingresar? Contacte a su administrador.
+    </p>
+    <p class="text-center mt-2 mb-0" style="font-size:.78rem;">
+      <a href="{{ url_for('ui.login') }}" class="text-muted">Acceso administrador</a>
+    </p>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

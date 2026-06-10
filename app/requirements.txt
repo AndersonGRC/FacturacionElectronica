@@ -1,0 +1,31 @@
+# Microservicio Facturación Electrónica DIAN — dependencias Python
+# Instalar con: pip install -r requirements.txt
+
+# Framework web
+flask>=3.1.0
+gunicorn>=22.0.0
+
+# Base de datos
+psycopg2-binary>=2.9.9
+
+# Cola de tareas asíncronas
+celery>=5.3.6
+redis>=5.0.3
+
+# XML UBL 2.1
+lxml>=6.0.0
+
+# Firma digital (XAdES-BES / XMLDsig)
+signxml>=3.2.2
+cryptography>=42.0.0
+
+# HTTP client (llamadas DIAN)
+requests>=2.32.0
+urllib3>=2.0.0
+
+# Variables de entorno
+python-dotenv>=1.0.0
+
+# PDF representación gráfica (Fase 2 — descomentar cuando se implemente)
+# xhtml2pdf>=0.2.17
+# reportlab>=4.0.0

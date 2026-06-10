@@ -1,0 +1,28 @@
+[Unit]
+Description=Microservicio Facturación Electrónica DIAN
+After=network.target postgresql.service redis.service
+Requires=postgresql.service
+
+[Service]
+Type=notify
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/FacturacionDIAN/app
+Environment="PATH=/var/www/FacturacionDIAN/venv/bin"
+EnvironmentFile=/var/www/FacturacionDIAN/app/.env
+ExecStart=/var/www/FacturacionDIAN/venv/bin/gunicorn \
+    --workers 2 \
+    --worker-class sync \
+    --timeout 60 \
+    --bind 127.0.0.1:5003 \
+    --access-logfile /var/www/FacturacionDIAN/logs/access.log \
+    --error-logfile /var/www/FacturacionDIAN/logs/error.log \
+    app:app
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

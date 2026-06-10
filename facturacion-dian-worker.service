@@ -1,0 +1,29 @@
+[Unit]
+Description=Celery Worker — Facturación Electrónica DIAN
+After=network.target redis-server.service postgresql.service
+Requires=redis-server.service postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/FacturacionDIAN
+Environment="PATH=/var/www/FacturacionDIAN/venv/bin"
+EnvironmentFile=/var/www/FacturacionDIAN/app/.env
+RuntimeDirectory=celery
+RuntimeDirectoryMode=0755
+ExecStart=/var/www/FacturacionDIAN/venv/bin/celery \
+    -A celery_worker.celery_app worker \
+    --beat \
+    --loglevel=info \
+    --concurrency=2 \
+    --logfile=/var/www/FacturacionDIAN/logs/celery.log \
+    --pidfile=/run/celery/facturacion-dian.pid \
+    -n worker@%%h
+ExecStop=/var/www/FacturacionDIAN/venv/bin/celery \
+    -A celery_worker.celery_app control shutdown
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

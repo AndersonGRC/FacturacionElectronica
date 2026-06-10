@@ -1,0 +1,21 @@
+# Secretos — NUNCA subir
+.env
+*.env
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Datos sensibles (certificados DIAN, facturas) y logs
+storage/
+logs/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Sistema
+.DS_Store
+Thumbs.db

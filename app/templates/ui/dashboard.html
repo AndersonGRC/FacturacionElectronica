@@ -1,0 +1,99 @@
+{% extends "ui/base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block breadcrumb %}Dashboard{% endblock %}
+
+{% block content %}
+<h5 class="fw-bold mb-4">Resumen General</h5>
+
+<!-- Stats -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-xl-3">
+    <div class="card stat-card verde p-3">
+      <div class="small text-muted mb-1">ACEPTADAS hoy</div>
+      <div class="fs-3 fw-bold text-success">{{ stats.aceptadas_hoy }}</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="card stat-card azul p-3">
+      <div class="small text-muted mb-1">PENDIENTES</div>
+      <div class="fs-3 fw-bold text-primary">{{ stats.pendientes }}</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="card stat-card rojo p-3">
+      <div class="small text-muted mb-1">ERRORES / RECHAZADAS</div>
+      <div class="fs-3 fw-bold text-danger">{{ stats.errores }}</div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-xl-3">
+    <div class="card stat-card gris p-3">
+      <div class="small text-muted mb-1">Tenants activos</div>
+      <div class="fs-3 fw-bold">{{ stats.tenants }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- Últimas facturas -->
+  <div class="col-lg-8">
+    <div class="card">
+      <div class="card-header bg-white d-flex align-items-center">
+        <span class="fw-semibold">Últimas 20 facturas</span>
+        <a href="{{ url_for('ui.facturas') }}" class="ms-auto btn btn-sm btn-outline-secondary">Ver todas</a>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Referencia</th><th>Tenant</th><th>Número</th><th>Estado</th><th>Hace</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for f in ultimas_facturas %}
+            <tr style="cursor:pointer" onclick="location.href='{{ url_for('ui.factura_detalle', factura_id=f.id) }}'">
+              <td class="small font-monospace">{{ f.referencia_pedido }}</td>
+              <td class="small">{{ f.tenant_nombre }}</td>
+              <td class="small">{{ f.numero_factura or '—' }}</td>
+              <td><span class="badge badge-{{ f.estado }}">{{ f.estado }}</span></td>
+              <td class="small text-muted">{{ f.hace }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-muted py-4">Sin facturas aún</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tenants -->
+  <div class="col-lg-4">
+    <div class="card">
+      <div class="card-header bg-white d-flex align-items-center">
+        <span class="fw-semibold">Tenants</span>
+        <a href="{{ url_for('ui.tenant_nuevo') }}" class="ms-auto btn btn-sm btn-primary">
+          <i class="bi bi-plus-lg"></i> Nuevo
+        </a>
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for t in tenants %}
+        <li class="list-group-item d-flex align-items-center">
+          <div>
+            <div class="fw-semibold small">{{ t.nombre }}</div>
+            <div class="text-muted" style="font-size:.75rem">NIT {{ t.nit }} · {{ t.ambiente }}</div>
+          </div>
+          <span class="ms-auto badge {% if t.activo %}bg-success{% else %}bg-secondary{% endif %}">
+            {{ 'Activo' if t.activo else 'Inactivo' }}
+          </span>
+          <a href="{{ url_for('ui.tenant_detalle', tenant_id=t.id) }}" class="ms-2 btn btn-sm btn-outline-secondary">
+            <i class="bi bi-pencil"></i>
+          </a>
+        </li>
+        {% else %}
+        <li class="list-group-item text-center text-muted py-3">Sin tenants</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endblock %}
