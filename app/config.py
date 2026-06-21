@@ -42,6 +42,11 @@ class Config:
     # Timeout para llamadas HTTP a la DIAN
     DIAN_TIMEOUT = int(os.getenv('DIAN_TIMEOUT', '30'))
 
+    # Plazo de gracia (minutos) para emisiones desde el portal: el documento queda
+    # PENDIENTE y puede anularse antes de enviarse a la DIAN. Override por tenant
+    # con la columna tenants.grace_minutos.
+    GRACE_MINUTES = int(os.getenv('GRACE_MINUTES', '30'))
+
     # Política de reintentos Celery
     TASK_MAX_RETRIES  = 3
     TASK_RETRY_DELAYS = [60, 300, 900]   # segundos: 1 min, 5 min, 15 min

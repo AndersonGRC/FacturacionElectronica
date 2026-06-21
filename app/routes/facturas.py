@@ -12,6 +12,7 @@ import psycopg2.extras
 from database import get_db_cursor
 from security import requiere_tenant
 from tasks.facturacion import procesar_factura
+from services.emision import emitir_documento, EmisionError
 
 facturas_bp = Blueprint('facturas', __name__, url_prefix='/api/v1')
 
@@ -42,92 +43,24 @@ def crear_factura():
     """
     tenant = request.tenant
     datos  = request.get_json(silent=True)
-
     if not datos:
         return jsonify({"error": "Se requiere JSON en el body"}), 400
 
-    # Validación mínima de campos requeridos
-    campos_req = ['referencia_pedido', 'cliente', 'items', 'metodo_pago']
-    faltantes  = [c for c in campos_req if c not in datos]
-    if faltantes:
-        return jsonify({"error": f"Campos requeridos faltantes: {faltantes}"}), 422
+    try:
+        res = emitir_documento(tenant['id'], datos)
+    except EmisionError as e:
+        return jsonify({"error": e.mensaje}), e.status
 
-    if not isinstance(datos.get('items'), list) or len(datos['items']) == 0:
-        return jsonify({"error": "items debe ser una lista no vacía"}), 422
-
-    # Validación detallada de cliente
-    err = _validar_cliente(datos.get('cliente', {}))
-    if err:
-        return jsonify({"error": err}), 422
-
-    # Validación detallada de cada ítem
-    for idx, item in enumerate(datos['items']):
-        err = _validar_item(item, idx)
-        if err:
-            return jsonify({"error": err}), 422
-
-    # Validación método de pago
-    METODOS_VALIDOS = {'10','20','30','41','42','43','44','45','46','47','48','49'}
-    if str(datos.get('metodo_pago', '')).strip() not in METODOS_VALIDOS:
-        return jsonify({"error": f"metodo_pago inválido. Válidos: {sorted(METODOS_VALIDOS)}"}), 422
-
-    referencia = datos['referencia_pedido']
-
-    # ── Chequeo de idempotencia ───────────────────────────────────────────────
-    with get_db_cursor(dict_cursor=True) as cur:
-        cur.execute(
-            """SELECT id, estado, numero_factura, cufe, creado_en
-               FROM facturas
-               WHERE tenant_id = %s AND referencia_pedido = %s""",
-            (tenant['id'], referencia)
-        )
-        existente = cur.fetchone()
-
-    if existente:
-        row = dict(existente)
-        row['creado_en'] = row['creado_en'].isoformat() if row['creado_en'] else None
+    if res['existente']:
         return jsonify({
-            **row,
-            "mensaje": "Factura ya registrada para esta referencia de pedido"
+            "id": res['id'], "estado": res['estado'],
+            "numero_factura": res.get('numero_factura'), "cufe": res.get('cufe'),
+            "mensaje": res['mensaje'],
         }), 200
 
-    # ── Calcular fecha de envío programado ───────────────────────────────────
-    delay_dias = int(os.getenv('DELAY_DIAS', '2'))
-
-    # ── Insertar con estado PENDIENTE y fecha programada ─────────────────────
-    factura_id = str(uuid.uuid4())
-
-    with get_db_cursor() as cur:
-        cur.execute(
-            """INSERT INTO facturas
-               (id, tenant_id, referencia_pedido, estado, datos_json, procesar_en)
-               VALUES (%s, %s, %s, 'PENDIENTE', %s,
-                       NOW() + (%s || ' days')::INTERVAL)""",
-            (
-                factura_id,
-                tenant['id'],
-                referencia,
-                psycopg2.extras.Json(datos),
-                delay_dias,
-            )
-        )
-
-    _registrar_evento(factura_id, 'RECIBIDA',
-                      f"Programada para envío en {delay_dias} día(s)")
-
-    # Obtener la fecha programada para incluirla en la respuesta
-    with get_db_cursor(dict_cursor=True) as cur:
-        cur.execute("SELECT procesar_en FROM facturas WHERE id = %s", (factura_id,))
-        row = cur.fetchone()
-
-    procesar_en_iso = row['procesar_en'].isoformat() if row else None
-
     return jsonify({
-        "id":          factura_id,
-        "estado":      "PENDIENTE",
-        "procesar_en": procesar_en_iso,
-        "mensaje":     f"Factura recibida. Será enviada a la DIAN en {delay_dias} día(s). "
-                       f"Puede cancelarse antes desde el panel de administración.",
+        "id": res['id'], "estado": res['estado'],
+        "procesar_en": res['procesar_en'], "mensaje": res['mensaje'],
     }), 202
 
 
@@ -270,6 +203,25 @@ def obtener_eventos(factura_id):
         }
         for e in eventos
     ])
+
+
+@facturas_bp.route('/facturas/<factura_id>/pdf', methods=['GET'])
+@requiere_tenant
+def descargar_pdf(factura_id):
+    """GET /api/v1/facturas/{id}/pdf — representación gráfica (PDF)."""
+    from flask import send_file
+    from pathlib import Path
+    tenant = request.tenant
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute(
+            "SELECT pdf_path, numero_factura FROM facturas WHERE id=%s AND tenant_id=%s",
+            (factura_id, tenant['id'])
+        )
+        f = cur.fetchone()
+    if not f or not f['pdf_path'] or not Path(f['pdf_path']).exists():
+        return jsonify({"error": "PDF no disponible para esta factura"}), 404
+    return send_file(f['pdf_path'], as_attachment=True,
+                     download_name=f"{f['numero_factura']}.pdf", mimetype='application/pdf')
 
 
 TIPOS_DOC_VALIDOS = {'CC','CE','NIT','TI','PA','RC'}

@@ -148,3 +148,45 @@ BEGIN
     RETURN v_siguiente;
 END;
 $$ LANGUAGE plpgsql;
+
+
+-- ============================================================
+-- Migraciones incrementales (idempotentes, seguras de re-ejecutar).
+-- Reúnen todas las columnas agregadas tras el esquema inicial para
+-- que un despliegue nuevo quede completo.
+-- ============================================================
+
+-- Tenants: software, datos de emisión, marca, integración, ambientes y portal
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS software_id             VARCHAR(100);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS software_pin            VARCHAR(20);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS test_set_id             VARCHAR(60);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS tipo_persona_emisor     VARCHAR(20) DEFAULT 'juridica';
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS responsabilidad_fiscal  VARCHAR(60);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS regimen_codigo          VARCHAR(5);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS direccion               VARCHAR(200);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS municipio_codigo        VARCHAR(10);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS municipio_nombre        VARCHAR(100);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS departamento_codigo     VARCHAR(5);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS departamento_nombre     VARCHAR(100);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS email                   VARCHAR(150);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS telefono                VARCHAR(30);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS logo_url                VARCHAR(500);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS color_primario          VARCHAR(20);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS grace_minutos           SMALLINT;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS modo_aprobacion         VARCHAR(20) DEFAULT 'automatico';
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS cybershop_base_url      VARCHAR(300);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS cybershop_sync_key      VARCHAR(200);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ambientes               JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS solicitud_produccion_en TIMESTAMPTZ;
+
+-- Tenants: acceso autoservicio al portal tributario
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_usuario           VARCHAR(100);
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_password_hash     TEXT;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_activo            BOOLEAN  NOT NULL DEFAULT FALSE;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_intentos_fallidos SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_bloqueado_hasta   TIMESTAMPTZ;
+
+-- Facturas: representación gráfica, set de pruebas y aprobación manual
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS pdf_path            VARCHAR(500);
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS zip_key             VARCHAR(100);
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS requiere_aprobacion BOOLEAN DEFAULT FALSE;

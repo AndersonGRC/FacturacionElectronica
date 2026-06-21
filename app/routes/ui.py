@@ -52,6 +52,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from database import get_db_cursor
 from utils.encryption import cifrar
 from services.storage import StorageManager
+from services.emision import emitir_documento, EmisionError, enviar_ahora
 from tasks.facturacion import procesar_factura
 
 ui_bp = Blueprint('ui', __name__, url_prefix='/ui')
@@ -88,6 +89,102 @@ def _tenant_id_scope():
     if session.get('ui_role') == 'tenant':
         return session.get('ui_tenant_id')
     return None
+
+
+def _login_tenant(f):
+    """Solo tenants autenticados (emisión autoservicio del cliente)."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if session.get('ui_role') == 'tenant':
+            return f(*args, **kwargs)
+        if session.get('ui_role') == 'admin':
+            flash('La emisión autoservicio es del portal del cliente. '
+                  'Usa el módulo Set de Pruebas.', 'warning')
+            return redirect(url_for('ui.pruebas'))
+        return redirect(url_for('ui.tenant_login', next=request.path))
+    return decorated
+
+
+# Catálogos para los formularios de emisión
+CONCEPTOS_NC = [('1', 'Devolución parcial de bienes/servicios'), ('2', 'Anulación de factura'),
+                ('3', 'Rebaja o descuento'), ('4', 'Ajuste de precio'), ('5', 'Otros')]
+CONCEPTOS_ND = [('1', 'Intereses'), ('2', 'Gastos por cobrar'),
+                ('3', 'Cambio del valor'), ('4', 'Otros')]
+METODOS_PAGO = [('10', 'Efectivo'), ('20', 'Cheque'), ('30', 'Transferencia'),
+                ('47', 'Transferencia bancaria'), ('48', 'Tarjeta crédito'),
+                ('49', 'Tarjeta débito')]
+TIPOS_DOC_CLIENTE = [('CC', 'Cédula'), ('NIT', 'NIT'), ('CE', 'Cédula extranjería'),
+                     ('TI', 'Tarjeta identidad'), ('PA', 'Pasaporte')]
+
+
+def _grace_minutos(tenant_id):
+    from config import Config
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT grace_minutos FROM tenants WHERE id=%s", (tenant_id,))
+        r = cur.fetchone()
+    return (r and r.get('grace_minutos')) or Config.GRACE_MINUTES
+
+
+def _tenant_envio(tenant_id):
+    """Retorna (modo_aprobacion, grace_minutos) del tenant."""
+    from config import Config
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT modo_aprobacion, grace_minutos FROM tenants WHERE id=%s", (tenant_id,))
+        r = cur.fetchone() or {}
+    modo = r.get('modo_aprobacion') or 'automatico'
+    grace = r.get('grace_minutos') or Config.GRACE_MINUTES
+    return modo, int(grace)
+
+
+def _plazo_txt(minutos):
+    if minutos < 60:
+        return f"{minutos} minuto(s)"
+    if minutos < 1440:
+        return f"{minutos // 60} hora(s)"
+    return f"{minutos // 1440} día(s)"
+
+
+def _parse_items(form):
+    """Lee las líneas del formulario (arrays paralelos) → lista de items."""
+    descs = form.getlist('item_descripcion')
+    cants = form.getlist('item_cantidad')
+    precs = form.getlist('item_precio')
+    ivas  = form.getlist('item_iva')
+    cods  = form.getlist('item_codigo')
+    items = []
+    for i, d in enumerate(descs):
+        if not (d or '').strip():
+            continue
+        def _g(lst, j, dv): return lst[j] if j < len(lst) and lst[j] != '' else dv
+        items.append({
+            'descripcion': d.strip(),
+            'cantidad': float(_g(cants, i, 1) or 1),
+            'precio_unitario': float(_g(precs, i, 0) or 0),
+            'impuesto_iva': float(_g(ivas, i, 0) or 0),
+            'codigo': (_g(cods, i, '') or '').strip(),
+            'codigo_unidad': 'EA',
+        })
+    return items
+
+
+def _facturas_aceptadas(tenant_id):
+    """Facturas ACEPTADAS del tenant (para referenciar en notas)."""
+    from datetime import timezone, timedelta
+    tz_co = timezone(timedelta(hours=-5))
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("""
+            SELECT numero_factura, cufe, creado_en
+            FROM facturas
+            WHERE tenant_id=%s AND estado='ACEPTADA' AND numero_factura IS NOT NULL
+              AND (datos_json->>'tipo_documento' IS NULL OR datos_json->>'tipo_documento'='factura')
+            ORDER BY creado_en DESC LIMIT 200
+        """, (tenant_id,))
+        rows = cur.fetchall()
+    out = []
+    for r in rows:
+        out.append({'numero': r['numero_factura'], 'cufe': r['cufe'],
+                    'fecha': r['creado_en'].astimezone(tz_co).strftime('%Y-%m-%d')})
+    return out
 
 
 # ── Admin SSO (CyberShop) ─────────────────────────────────────────────────────
@@ -161,7 +258,7 @@ def tenant_auto_login():
 
     with get_db_cursor(dict_cursor=True) as cur:
         cur.execute(
-            "SELECT id, nombre, portal_activo FROM tenants WHERE id = %s AND activo = TRUE",
+            "SELECT id, nombre, ambiente, portal_activo FROM tenants WHERE id = %s AND activo = TRUE",
             (tenant_id,)
         )
         t = cur.fetchone()
@@ -171,9 +268,10 @@ def tenant_auto_login():
         return redirect(url_for('ui.tenant_login'))
 
     session.clear()
-    session['ui_role']           = 'tenant'
-    session['ui_tenant_id']      = str(t['id'])
-    session['ui_tenant_nombre']  = t['nombre']
+    session['ui_role']            = 'tenant'
+    session['ui_tenant_id']       = str(t['id'])
+    session['ui_tenant_nombre']   = t['nombre']
+    session['ui_tenant_ambiente'] = t['ambiente']
     return redirect(url_for('ui.facturas'))
 
 
@@ -220,7 +318,7 @@ def tenant_login():
 
         with get_db_cursor(dict_cursor=True) as cur:
             cur.execute("""
-                SELECT id, nombre, portal_password_hash, portal_activo,
+                SELECT id, nombre, ambiente, portal_password_hash, portal_activo,
                        portal_intentos_fallidos, portal_bloqueado_hasta
                 FROM tenants
                 WHERE LOWER(portal_usuario) = %s
@@ -277,9 +375,10 @@ def tenant_login():
             """, (str(t['id']),))
 
         session.clear()
-        session['ui_role']          = 'tenant'
-        session['ui_tenant_id']     = str(t['id'])
-        session['ui_tenant_nombre'] = t['nombre']
+        session['ui_role']            = 'tenant'
+        session['ui_tenant_id']       = str(t['id'])
+        session['ui_tenant_nombre']   = t['nombre']
+        session['ui_tenant_ambiente'] = t['ambiente']
         return redirect(url_for('ui.facturas'))
 
     return render_template('ui/tenant_portal_login.html')
@@ -390,17 +489,25 @@ def tenant_guardar(tenant_id=None):
     f = request.form
 
     if tenant_id:
-        campos = ['nombre', 'razon_social', 'ambiente', 'prefijo', 'activo',
-                  'software_id', 'clave_tecnica', 'tipo_persona_emisor',
+        campos = ['nombre', 'razon_social', 'prefijo', 'activo',
+                  'software_id', 'clave_tecnica', 'test_set_id', 'tipo_persona_emisor',
+                  'digito_verificacion',
                   'resolucion_dian', 'resolucion_fecha', 'resolucion_desde',
-                  'resolucion_hasta', 'resolucion_vigencia']
+                  'resolucion_hasta', 'resolucion_vigencia',
+                  'software_pin', 'regimen_codigo', 'responsabilidad_fiscal',
+                  'direccion', 'municipio_codigo', 'municipio_nombre',
+                  'departamento_codigo', 'departamento_nombre', 'email', 'telefono',
+                  'color_primario', 'logo_url', 'grace_minutos',
+                  'cybershop_base_url', 'cybershop_sync_key']
+        enteros = ('resolucion_desde', 'resolucion_hasta', 'grace_minutos',
+                   'digito_verificacion')
         datos = {}
         for c in campos:
             v = f.get(c, '').strip() or None
             if c == 'activo':
                 v = f.get(c) == 'true'
-            elif c in ('resolucion_desde', 'resolucion_hasta'):
-                v = int(f.get(c)) if f.get(c, '').strip().isdigit() else None
+            elif c in enteros:
+                v = int(f.get(c)) if (f.get(c, '').strip() or '').isdigit() else None
             datos[c] = v
 
         set_clause = ', '.join(f"{k}=%s" for k in datos)
@@ -523,6 +630,417 @@ def tenant_regenerar_key(tenant_id):
                     (api_key_hash, tenant_id))
     flash(f'Nuevo API Key: {api_key} — Guárdalo ahora.', 'warning')
     return redirect(url_for('ui.tenant_detalle', tenant_id=tenant_id))
+
+
+# ── Cambio de ambiente Habilitación ↔ Producción (con swap de config) ──────────
+
+# Campos específicos de cada ambiente: al cambiar, se guardan los del ambiente que
+# se deja y se cargan los del que se entra (cada ambiente tiene su propio software,
+# resolución, consecutivo y TestSetId).
+ENV_FIELDS = ['software_id', 'software_pin', 'clave_tecnica', 'test_set_id',
+              'resolucion_dian', 'prefijo', 'resolucion_desde', 'resolucion_hasta',
+              'resolucion_fecha', 'resolucion_vigencia', 'consecutivo_actual']
+
+
+@ui_bp.route('/tenants/<tenant_id>/cambiar-ambiente', methods=['POST'])
+@_login_admin
+def cambiar_ambiente(tenant_id):
+    import psycopg2.extras
+    destino = request.form.get('destino')
+    if destino not in ('habilitacion', 'produccion'):
+        flash('Ambiente inválido.', 'danger')
+        return redirect(url_for('ui.tenant_detalle', tenant_id=tenant_id))
+
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT * FROM tenants WHERE id=%s", (tenant_id,))
+        row = cur.fetchone()
+    if not row:
+        flash('Tenant no encontrado.', 'danger')
+        return redirect(url_for('ui.tenants'))
+    row = dict(row)
+    actual = row['ambiente']
+    if actual == destino:
+        flash(f'Ya estás en {destino.upper()}.', 'info')
+        return redirect(url_for('ui.tenant_detalle', tenant_id=tenant_id))
+
+    # CANDADO: para pasar a producción, los datos reales deben estar cargados
+    # EXPLÍCITAMENTE (marca _configurado) — no basta un snapshot heredado.
+    if destino == 'produccion':
+        prod = (row.get('ambientes') or {}).get('produccion') or {}
+        if not prod.get('_configurado'):
+            flash('No puedes pasar a PRODUCCIÓN todavía: primero guarda los '
+                  '"Datos de Producción" (resolución y credenciales reales de la DIAN).', 'danger')
+            return redirect(url_for('ui.tenant_detalle', tenant_id=tenant_id))
+        requeridos = ['software_id', 'clave_tecnica', 'resolucion_dian', 'prefijo',
+                      'resolucion_desde', 'resolucion_hasta']
+        faltan = [k for k in requeridos if not prod.get(k)]
+        if faltan:
+            flash('Datos de producción incompletos: faltan ' + ', '.join(faltan) + '.', 'danger')
+            return redirect(url_for('ui.tenant_detalle', tenant_id=tenant_id))
+
+    ambientes = row.get('ambientes') or {}
+    # 1) Guardar (snapshot) la configuración del ambiente actual (preservando _configurado)
+    snap = {}
+    for f in ENV_FIELDS:
+        v = row.get(f)
+        snap[f] = v.isoformat() if hasattr(v, 'isoformat') else v
+    if (ambientes.get(actual) or {}).get('_configurado'):
+        snap['_configurado'] = True
+    ambientes[actual] = snap
+
+    # 2) Cargar la del ambiente destino si ya existe
+    updates = {'ambiente': destino, 'ambientes': psycopg2.extras.Json(ambientes)}
+    tiene_destino = bool(ambientes.get(destino))
+    if tiene_destino:
+        for f in ENV_FIELDS:
+            updates[f] = ambientes[destino].get(f)
+    elif destino == 'produccion':
+        updates['test_set_id'] = None
+    if destino == 'produccion':
+        updates['solicitud_produccion_en'] = None   # solicitud atendida   # producción nunca usa set de pruebas
+
+    set_clause = ', '.join(f"{k}=%s" for k in updates)
+    with get_db_cursor() as cur:
+        cur.execute(f"UPDATE tenants SET {set_clause} WHERE id=%s",
+                    list(updates.values()) + [tenant_id])
+
+    if destino == 'produccion' and not tiene_destino:
+        flash('Cambiado a PRODUCCIÓN. ⚠️ Configura los datos REALES de producción '
+              '(Software ID, PIN, Clave Técnica y Resolución) antes de facturar; '
+              'aún conserva los de habilitación.', 'warning')
+    else:
+        flash(f'Ambiente cambiado a {destino.upper()} ✅ (configuración restaurada).', 'success')
+    return redirect(url_for('ui.tenant_detalle', tenant_id=tenant_id))
+
+
+@ui_bp.route('/tenants/<tenant_id>/produccion', methods=['POST'])
+@_login_admin
+def guardar_produccion(tenant_id):
+    """Guarda (anticipadamente) la configuración de PRODUCCIÓN en ambientes['produccion']."""
+    import psycopg2.extras
+    f = request.form
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT ambientes FROM tenants WHERE id=%s", (tenant_id,))
+        row = cur.fetchone()
+    if not row:
+        flash('Tenant no encontrado.', 'danger')
+        return redirect(url_for('ui.tenants'))
+    ambientes = (row['ambientes'] or {})
+    prod = ambientes.get('produccion') or {}
+    for k in ('software_id', 'software_pin', 'clave_tecnica', 'resolucion_dian',
+              'prefijo', 'resolucion_fecha', 'resolucion_vigencia'):
+        prod[k] = (f.get(k) or '').strip() or None
+    for k in ('resolucion_desde', 'resolucion_hasta'):
+        prod[k] = int(f.get(k)) if (f.get(k, '').strip() or '').isdigit() else None
+    prod['consecutivo_actual'] = int(f.get('consecutivo_actual') or 0)
+    prod['test_set_id'] = None
+    prod['_configurado'] = True   # marca: producción cargada explícitamente (habilita el switch)
+    ambientes['produccion'] = prod
+    with get_db_cursor() as cur:
+        cur.execute("UPDATE tenants SET ambientes=%s WHERE id=%s",
+                    (psycopg2.extras.Json(ambientes), tenant_id))
+    flash('Datos de producción guardados. Ya puedes usar “Pasar a Producción”.', 'success')
+    return redirect(url_for('ui.tenant_detalle', tenant_id=tenant_id))
+
+
+@ui_bp.route('/solicitar-produccion', methods=['POST'])
+@_login_tenant
+def solicitar_produccion():
+    """El cliente solicita pasar a producción; el administrador la activa."""
+    with get_db_cursor() as cur:
+        cur.execute("UPDATE tenants SET solicitud_produccion_en=NOW() "
+                    "WHERE id=%s AND ambiente='habilitacion'", (session.get('ui_tenant_id'),))
+    flash('✅ Solicitud enviada. El administrador habilitará tu facturación en producción. '
+          'Mientras tanto puedes seguir probando.', 'success')
+    return redirect(url_for('ui.facturas'))
+
+
+# ── CSRF simple (token en sesión) ──────────────────────────────────────────────
+
+def _csrf_token():
+    tok = session.get('csrf_token')
+    if not tok:
+        tok = uuid.uuid4().hex
+        session['csrf_token'] = tok
+    return tok
+
+
+def _csrf_ok(form):
+    return form.get('csrf_token') and form.get('csrf_token') == session.get('csrf_token')
+
+
+# ── Emisión autoservicio (rol tenant) ──────────────────────────────────────────
+
+def _emitir(tenant_id, tipo, form):
+    """Arma el payload desde el formulario y emite. Retorna (ok, factura_id|None)."""
+    datos = {
+        'referencia_pedido': (form.get('referencia') or '').strip()
+                              or f"PORTAL-{tipo}-{int(time.time())}",
+        'tipo_documento': tipo,
+        'metodo_pago': form.get('metodo_pago', '10'),
+        'moneda': 'COP',
+        'notas': (form.get('notas') or '').strip(),
+        'cliente': {
+            'tipo_persona': form.get('cli_tipo_persona', 'natural'),
+            'tipo_documento': form.get('cli_tipo_doc', 'CC'),
+            'numero_documento': (form.get('cli_doc') or '').strip(),
+            'nombre': (form.get('cli_nombre') or '').strip(),
+            'email': (form.get('cli_email') or '').strip(),
+            'telefono': (form.get('cli_telefono') or '').strip(),
+            'direccion': (form.get('cli_direccion') or '').strip(),
+            'municipio_codigo': (form.get('cli_municipio') or '11001').strip(),
+        },
+        'items': _parse_items(form),
+    }
+    if tipo != 'factura':
+        datos['documento_referencia'] = {
+            'numero': (form.get('ref_numero') or '').strip(),
+            'cufe': (form.get('ref_cufe') or '').strip(),
+            'fecha': (form.get('ref_fecha') or '').strip(),
+        }
+        codigo = form.get('concepto_codigo', '2')
+        catalogo = dict(CONCEPTOS_NC if tipo == 'nota_credito' else CONCEPTOS_ND)
+        datos['concepto_nota'] = {'codigo': codigo,
+                                  'descripcion': catalogo.get(codigo, 'Ajuste')}
+
+    modo, grace = _tenant_envio(tenant_id)
+    if modo == 'manual':
+        res = emitir_documento(tenant_id, datos, delay_seconds=60, requiere_aprobacion=True)
+        flash('Documento creado. Queda PENDIENTE DE TU APROBACIÓN — no se envía a la DIAN '
+              'hasta que lo apruebes. Apruébalo o recházalo desde el detalle o el monitor.', 'success')
+    else:
+        res = emitir_documento(tenant_id, datos, delay_seconds=grace * 60)
+        flash(f"Documento emitido. Se enviará a la DIAN en {_plazo_txt(grace)}; "
+              f"puedes aprobarlo ya o anularlo antes.", 'success')
+    return True, res['id']
+
+
+@ui_bp.route('/emitir', methods=['GET', 'POST'])
+@_login_tenant
+def emitir():
+    """Formulario UNIFICADO: factura, nota crédito o nota débito en un solo lugar."""
+    tenant_id = session.get('ui_tenant_id')
+    if request.method == 'POST':
+        if not _csrf_ok(request.form):
+            flash('Sesión expirada, intenta de nuevo.', 'danger')
+            return redirect(url_for('ui.emitir'))
+        tipo = request.form.get('tipo_documento', 'factura')
+        if tipo not in ('factura', 'nota_credito', 'nota_debito'):
+            tipo = 'factura'
+        try:
+            _ok, fid = _emitir(tenant_id, tipo, request.form)
+            return redirect(url_for('ui.factura_detalle', factura_id=fid))
+        except EmisionError as e:
+            flash(e.mensaje, 'danger')
+    return render_template('ui/emitir.html', csrf_token=_csrf_token(),
+                           metodos=METODOS_PAGO, tipos_doc=TIPOS_DOC_CLIENTE,
+                           conceptos_nc=CONCEPTOS_NC, conceptos_nd=CONCEPTOS_ND,
+                           facturas=_facturas_aceptadas(tenant_id),
+                           grace=_grace_minutos(tenant_id))
+
+
+@ui_bp.route('/emitir/factura', methods=['GET', 'POST'])
+@_login_tenant
+def emitir_factura():
+    tenant_id = session.get('ui_tenant_id')
+    if request.method == 'POST':
+        if not _csrf_ok(request.form):
+            flash('Sesión expirada, intenta de nuevo.', 'danger')
+            return redirect(url_for('ui.emitir_factura'))
+        try:
+            _ok, fid = _emitir(tenant_id, 'factura', request.form)
+            return redirect(url_for('ui.factura_detalle', factura_id=fid))
+        except EmisionError as e:
+            flash(e.mensaje, 'danger')
+    return render_template('ui/emitir_factura.html',
+                           csrf_token=_csrf_token(), metodos=METODOS_PAGO,
+                           tipos_doc=TIPOS_DOC_CLIENTE, grace=_grace_minutos(tenant_id))
+
+
+@ui_bp.route('/emitir/nota', methods=['GET', 'POST'])
+@_login_tenant
+def emitir_nota():
+    tenant_id = session.get('ui_tenant_id')
+    tipo = request.values.get('tipo', 'nota_credito')
+    if tipo not in ('nota_credito', 'nota_debito'):
+        tipo = 'nota_credito'
+    if request.method == 'POST':
+        if not _csrf_ok(request.form):
+            flash('Sesión expirada, intenta de nuevo.', 'danger')
+            return redirect(url_for('ui.emitir_nota', tipo=tipo))
+        try:
+            _ok, fid = _emitir(tenant_id, tipo, request.form)
+            return redirect(url_for('ui.factura_detalle', factura_id=fid))
+        except EmisionError as e:
+            flash(e.mensaje, 'danger')
+    conceptos = CONCEPTOS_NC if tipo == 'nota_credito' else CONCEPTOS_ND
+    return render_template('ui/emitir_nota.html', tipo=tipo,
+                           titulo=('Nota Crédito' if tipo == 'nota_credito' else 'Nota Débito'),
+                           csrf_token=_csrf_token(), metodos=METODOS_PAGO,
+                           tipos_doc=TIPOS_DOC_CLIENTE, conceptos=conceptos,
+                           facturas=_facturas_aceptadas(tenant_id),
+                           grace=_grace_minutos(tenant_id))
+
+
+PRESETS_ENVIO = [(1, 'Inmediato (apenas se emite)'), (30, 'A los 30 minutos'),
+                 (120, 'A las 2 horas'), (1440, 'Al día siguiente (24 h)'),
+                 (10080, 'A los 7 días'), (21600, 'A los 15 días')]
+
+
+@ui_bp.route('/config-envio', methods=['GET', 'POST'])
+@_login_tenant
+def config_envio():
+    """El cliente elige cuándo se envían sus documentos a la DIAN (o si son manuales)."""
+    tenant_id = session.get('ui_tenant_id')
+    if request.method == 'POST':
+        if not _csrf_ok(request.form):
+            flash('Sesión expirada.', 'danger')
+            return redirect(url_for('ui.config_envio'))
+        pol = request.form.get('politica', '30')
+        if pol == 'manual':
+            with get_db_cursor() as cur:
+                cur.execute("UPDATE tenants SET modo_aprobacion='manual' WHERE id=%s", (tenant_id,))
+            flash('Listo: ahora NADA se envía a la DIAN hasta que tú lo apruebes.', 'success')
+        else:
+            mins = int(pol) if pol.isdigit() else 30
+            with get_db_cursor() as cur:
+                cur.execute("UPDATE tenants SET modo_aprobacion='automatico', grace_minutos=%s "
+                            "WHERE id=%s", (mins, tenant_id))
+            flash(f'Listo: los documentos se enviarán automáticamente {_plazo_txt(mins)} '
+                  f'después de emitirlos (puedes aprobarlos antes).', 'success')
+        return redirect(url_for('ui.config_envio'))
+    modo, grace = _tenant_envio(tenant_id)
+    return render_template('ui/config_envio.html', modo=modo, grace=grace,
+                           presets=PRESETS_ENVIO, csrf_token=_csrf_token())
+
+
+@ui_bp.route('/catalogo')
+@_login_tenant
+def catalogo_json():
+    """Catálogo de productos de la tienda CyberShop del cliente (para autocompletar)."""
+    from services.catalogo import obtener_productos
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT * FROM tenants WHERE id=%s", (session.get('ui_tenant_id'),))
+        t = cur.fetchone()
+    return jsonify(obtener_productos(dict(t)) if t else [])
+
+
+# ── Módulo de pruebas (solo admin) ─────────────────────────────────────────────
+
+def _muestra_datos(tipo, i, ref=None):
+    base = {
+        'referencia_pedido': f"SETP-{tipo}-{int(time.time())}-{i}",
+        'tipo_documento': tipo, 'metodo_pago': '10', 'moneda': 'COP',
+        'notas': f"Documento de prueba {tipo} #{i + 1}",
+        'cliente': {'tipo_persona': 'natural', 'tipo_documento': 'CC',
+                    'numero_documento': '1098765432', 'nombre': 'Cliente Prueba DIAN',
+                    'email': 'prueba@ejemplo.com', 'telefono': '3001234567',
+                    'direccion': 'Calle 1 2-3', 'municipio_codigo': '11001'},
+        'items': [{'descripcion': f'Producto de prueba {i + 1}', 'cantidad': 1,
+                   'precio_unitario': 10000 + i * 1000, 'impuesto_iva': 19,
+                   'codigo_unidad': 'EA', 'codigo': f'TEST-{i + 1:03d}'}],
+    }
+    if tipo != 'factura' and ref:
+        base['documento_referencia'] = {'numero': ref['numero'], 'cufe': ref['cufe'],
+                                        'fecha': ref['fecha']}
+        base['concepto_nota'] = ({'codigo': '2', 'descripcion': 'Anulación de factura'}
+                                 if tipo == 'nota_credito'
+                                 else {'codigo': '3', 'descripcion': 'Cambio del valor'})
+    return base
+
+
+def _emitir_y_enviar(tenant_id, datos):
+    res = emitir_documento(tenant_id, datos, delay_seconds=0)
+    if not res['existente']:
+        enviar_ahora(res['id'])
+    return res
+
+
+@ui_bp.route('/pruebas')
+@_login_admin
+def pruebas():
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT id, nombre, nit, ambiente FROM tenants WHERE activo=TRUE ORDER BY nombre")
+        tenants = [dict(r) for r in cur.fetchall()]
+        for t in tenants:
+            t['id'] = str(t['id'])
+    sel = request.args.get('tenant_id', tenants[0]['id'] if tenants else '')
+    progreso = None
+    if sel:
+        with get_db_cursor(dict_cursor=True) as cur:
+            cur.execute("""
+                SELECT COALESCE(datos_json->>'tipo_documento','factura') AS tipo, COUNT(*) AS n
+                FROM facturas WHERE tenant_id=%s AND estado='ACEPTADA'
+                GROUP BY 1""", (sel,))
+            progreso = {r['tipo']: r['n'] for r in cur.fetchall()}
+    return render_template('ui/set_pruebas.html', tenants=tenants, sel=sel,
+                           progreso=progreso or {}, csrf_token=_csrf_token())
+
+
+@ui_bp.route('/pruebas/lote', methods=['POST'])
+@_login_admin
+def pruebas_lote():
+    if not _csrf_ok(request.form):
+        flash('Sesión expirada.', 'danger'); return redirect(url_for('ui.pruebas'))
+    tenant_id = request.form.get('tenant_id')
+    n_fv = max(0, min(50, int(request.form.get('n_fv', 0) or 0)))
+    n_nc = max(0, min(50, int(request.form.get('n_nc', 0) or 0)))
+    n_nd = max(0, min(50, int(request.form.get('n_nd', 0) or 0)))
+    hechos = {'factura': 0, 'nota_credito': 0, 'nota_debito': 0}
+
+    for i in range(n_fv):
+        try:
+            _emitir_y_enviar(tenant_id, _muestra_datos('factura', i)); hechos['factura'] += 1
+        except EmisionError:
+            pass
+
+    refs = _facturas_aceptadas(tenant_id)
+    if (n_nc or n_nd) and not refs:
+        flash('Emití las facturas. Cuando la DIAN las acepte, vuelve a correr el lote '
+              'para generar las notas (necesitan una factura aceptada de referencia).', 'warning')
+    else:
+        for i in range(n_nc):
+            try:
+                _emitir_y_enviar(tenant_id, _muestra_datos('nota_credito', i, refs[i % len(refs)]))
+                hechos['nota_credito'] += 1
+            except EmisionError:
+                pass
+        for i in range(n_nd):
+            try:
+                _emitir_y_enviar(tenant_id, _muestra_datos('nota_debito', i, refs[i % len(refs)]))
+                hechos['nota_debito'] += 1
+            except EmisionError:
+                pass
+
+    flash(f"Lote emitido y enviado: {hechos['factura']} facturas, "
+          f"{hechos['nota_credito']} notas crédito, {hechos['nota_debito']} notas débito. "
+          f"Revisa el monitor para ver la respuesta de la DIAN.", 'success')
+    return redirect(url_for('ui.facturas', tenant_id=tenant_id))
+
+
+@ui_bp.route('/pruebas/individual', methods=['POST'])
+@_login_admin
+def pruebas_individual():
+    if not _csrf_ok(request.form):
+        flash('Sesión expirada.', 'danger'); return redirect(url_for('ui.pruebas'))
+    tenant_id = request.form.get('tenant_id')
+    tipo = request.form.get('tipo', 'factura')
+    if tipo not in ('factura', 'nota_credito', 'nota_debito'):
+        tipo = 'factura'
+    ref = None
+    if tipo != 'factura':
+        refs = _facturas_aceptadas(tenant_id)
+        if not refs:
+            flash('No hay facturas aceptadas para referenciar. Emite una factura primero.', 'warning')
+            return redirect(url_for('ui.pruebas', tenant_id=tenant_id))
+        ref = refs[0]
+    try:
+        res = _emitir_y_enviar(tenant_id, _muestra_datos(tipo, 0, ref))
+        flash('Documento de prueba emitido y enviado a la DIAN.', 'success')
+        return redirect(url_for('ui.factura_detalle', factura_id=res['id']))
+    except EmisionError as e:
+        flash(e.mensaje, 'danger')
+        return redirect(url_for('ui.pruebas', tenant_id=tenant_id))
 
 
 # ── Facturas (admin + tenant) ──────────────────────────────────────────────────
@@ -656,6 +1174,51 @@ def factura_detalle(factura_id):
                            es_tenant=(tenant_scope is not None))
 
 
+@ui_bp.route('/facturas/<factura_id>/anular', methods=['POST'])
+@_login_tenant_o_admin
+def factura_anular(factura_id):
+    """Anula un PENDIENTE dentro del plazo de gracia (tenant sobre los suyos)."""
+    scope = _tenant_id_scope()
+    with get_db_cursor() as cur:
+        if scope:
+            cur.execute("""UPDATE facturas SET estado='CANCELADA'
+                WHERE id=%s AND tenant_id=%s AND estado='PENDIENTE'
+                  AND (procesar_en>NOW() OR requiere_aprobacion)
+                RETURNING id""", (factura_id, scope))
+        else:
+            cur.execute("""UPDATE facturas SET estado='CANCELADA'
+                WHERE id=%s AND estado='PENDIENTE'
+                  AND (procesar_en>NOW() OR requiere_aprobacion) RETURNING id""",
+                        (factura_id,))
+        ok = cur.fetchone()
+    if ok:
+        with get_db_cursor() as cur:
+            cur.execute("INSERT INTO factura_eventos (factura_id, evento, detalle) "
+                        "VALUES (%s,%s,%s)", (factura_id, 'CANCELADA', 'Anulada desde el portal'))
+        flash('Documento anulado. No será enviado a la DIAN.', 'success')
+    else:
+        flash('No se puede anular: ya fue enviado o el plazo venció.', 'danger')
+    return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
+
+
+@ui_bp.route('/facturas/<factura_id>/enviar-ya', methods=['POST'])
+@_login_tenant_o_admin
+def factura_enviar_ya(factura_id):
+    """Adelanta el envío (sin esperar el plazo)."""
+    scope = _tenant_id_scope()
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT tenant_id, estado FROM facturas WHERE id=%s", (factura_id,))
+        f = cur.fetchone()
+    if not f or (scope and str(f['tenant_id']) != scope):
+        flash('No autorizado.', 'danger')
+        return redirect(url_for('ui.facturas'))
+    if enviar_ahora(factura_id):
+        flash('Enviando a la DIAN ahora…', 'success')
+    else:
+        flash('No se puede enviar: el documento no está pendiente.', 'danger')
+    return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
+
+
 @ui_bp.route('/facturas/<factura_id>/cancelar', methods=['POST'])
 @_login_admin
 def factura_cancelar(factura_id):
@@ -710,7 +1273,8 @@ def descargar_archivo(factura_id, tipo):
 
     with get_db_cursor(dict_cursor=True) as cur:
         cur.execute(
-            "SELECT xml_path, response_path, numero_factura, tenant_id FROM facturas WHERE id=%s",
+            "SELECT xml_path, response_path, pdf_path, numero_factura, tenant_id "
+            "FROM facturas WHERE id=%s",
             (factura_id,)
         )
         f = cur.fetchone()
@@ -721,10 +1285,14 @@ def descargar_archivo(factura_id, tipo):
     if tenant_scope and str(f['tenant_id']) != tenant_scope:
         return 'No autorizado', 403
 
-    path = f['xml_path'] if tipo == 'xml' else f['response_path']
+    if tipo == 'pdf':
+        path, suffix = f.get('pdf_path'), '.pdf'
+    elif tipo == 'xml':
+        path, suffix = f['xml_path'], '_firmado.xml'
+    else:
+        path, suffix = f['response_path'], '_response.xml'
     if not path or not Path(path).exists():
         return 'Archivo no disponible', 404
 
     nombre = f['numero_factura'] or factura_id[:8]
-    suffix = '_firmado.xml' if tipo == 'xml' else '_response.xml'
     return send_file(path, as_attachment=True, download_name=f"{nombre}{suffix}")

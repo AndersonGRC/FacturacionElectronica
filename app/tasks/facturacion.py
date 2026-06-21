@@ -18,8 +18,12 @@ Orquesta el ciclo completo de una factura electrónica:
 import logging
 import os
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+# Zona horaria de Colombia (UTC-5) — el servidor corre en UTC
+TZ_CO = timezone(timedelta(hours=-5))
 
 # Asegurar que app/ esté en el path
 app_dir = Path(__file__).parent.parent
@@ -111,7 +115,9 @@ def procesar_factura(self, factura_id: str):
         # ── Paso 4: Número de factura y CUFE ───────────────────────────────────
         prefijo        = tenant.get('prefijo') or ''
         numero_factura = f"{prefijo}{consecutivo}"
-        now            = datetime.now()
+        now            = datetime.now(TZ_CO)
+        fecha_emision  = now.strftime('%Y-%m-%d')
+        hora_emision   = now.strftime('%H:%M:%S-05:00')
 
         # Calcular totales para el CUFE
         from decimal import Decimal, ROUND_HALF_UP
@@ -119,13 +125,16 @@ def procesar_factura(self, factura_id: str):
         def _d(v):
             return Decimal(str(v)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
+        # Responsable de IVA (regimen 48) vs No responsable (49) — debe coincidir
+        # con xml_builder para que el CUFE calce con el XML.
+        responsable_iva = str(tenant.get('regimen_codigo') or '48') == '48'
         subtotal  = Decimal('0')
         total_iva = Decimal('0')
         for item in datos.get('items', []):
             cant    = _d(item.get('cantidad', 1))
             precio  = _d(item.get('precio_unitario', 0))
             desc    = _d(item.get('descuento', 0))
-            iva_pct = _d(item.get('impuesto_iva', 19))
+            iva_pct = _d(item.get('impuesto_iva', 19)) if responsable_iva else Decimal('0')
             base    = (cant * precio) - desc
             subtotal  += base
             total_iva += base * iva_pct / Decimal('100')
@@ -138,28 +147,35 @@ def procesar_factura(self, factura_id: str):
         nit_emisor     = tenant.get('nit', '')
         num_doc_recep  = datos.get('cliente', {}).get('numero_documento', '0')
 
+        # CUFE (factura) usa la CLAVE TÉCNICA; CUDE (notas) usa el PIN del software.
+        tipo_doc_actual = datos.get('tipo_documento', 'factura')
+        clave_cufe = (tenant.get('software_pin') or clave_tecnica
+                      if tipo_doc_actual in ('nota_credito', 'nota_debito')
+                      else clave_tecnica)
+
         cufe = calcular_cufe(
             numero_factura  = numero_factura,
-            fecha_factura   = now.strftime('%Y-%m-%d'),
-            hora_factura    = now.strftime('%H:%M:%S'),
+            fecha_factura   = fecha_emision,
+            hora_factura    = hora_emision,
             valor_factura   = float(subtotal),
             cod_impuesto1   = '01',
             valor_impuesto1 = float(total_iva),
-            cod_impuesto2   = '02',
+            cod_impuesto2   = '04',   # INC (impuesto nacional al consumo)
             valor_impuesto2 = 0.0,
-            cod_impuesto3   = '03',
+            cod_impuesto3   = '03',   # ICA
             valor_impuesto3 = 0.0,
             valor_total     = float(total),
             nit_emisor      = nit_emisor,
             num_doc_receptor= num_doc_recep,
-            clave_tecnica   = clave_tecnica,
+            clave_tecnica   = clave_cufe,
             ambiente        = tipo_amb,
         )
 
         logger.info(f"Número de factura: {numero_factura}, CUFE: {cufe[:20]}...")
 
         # ── Paso 5: Construir XML ──────────────────────────────────────────────
-        builder   = XMLBuilder(tenant, datos, numero_factura, cufe)
+        builder   = XMLBuilder(tenant, datos, numero_factura, cufe,
+                               fecha=fecha_emision, hora=hora_emision)
         xml_bytes = builder.build()
 
         # ── Paso 6: Firmar ─────────────────────────────────────────────────────
@@ -183,12 +199,47 @@ def procesar_factura(self, factura_id: str):
             clave_tecnica = clave_tecnica,
             software_id   = tenant.get('software_id'),
             timeout       = int(os.getenv('DIAN_TIMEOUT', '30')),
+            cert_path     = tenant['cert_path'],
+            cert_password = cert_password,
         )
-        resultado = dian.enviar_factura(
-            xml_firmado    = xml_firmado,
-            numero_factura = numero_factura,
-            token_dian     = tenant.get('token_dian'),
-        )
+        test_set_id = tenant.get('test_set_id')
+        if ambiente == 'habilitacion' and test_set_id:
+            # SET DE PRUEBAS: SendTestSetAsync con el TestSetId (la DIAN solo cuenta
+            # los documentos del set si se envían así). Es asíncrono → ZipKey y luego
+            # GetStatusZip para el veredicto.
+            envio   = dian.enviar_test_set(xml_firmado, numero_factura, test_set_id)
+            zip_key = envio.get('zip_key')
+            with get_db_cursor() as cur:
+                cur.execute("UPDATE facturas SET zip_key=%s WHERE id=%s", (zip_key, factura_id))
+            _registrar_evento(factura_id, 'ENVIADA',
+                              f"Set de pruebas (TestSetId). ZipKey={zip_key or '—'}")
+            if not zip_key:
+                raise ValueError("DIAN no devolvió ZipKey en SendTestSetAsync: "
+                                 + '; '.join(envio.get('errors') or ['sin detalle']))
+            resultado = None
+            for _ in range(10):
+                time.sleep(6)
+                r = dian.obtener_estado_documento(zip_key)
+                if r.get('is_valid') or (r.get('status_code') or '').strip():
+                    resultado = r
+                    break
+            if resultado is None:
+                # Aún en proceso en la DIAN — dejar PROCESANDO; se puede reconsultar luego
+                with get_db_cursor() as cur:
+                    cur.execute("""UPDATE facturas SET estado='PROCESANDO', numero_factura=%s,
+                                   cufe=%s, xml_path=%s, zip_key=%s,
+                                   error_mensaje='En proceso en la DIAN (set de pruebas)',
+                                   actualizado_en=NOW() WHERE id=%s""",
+                                (numero_factura, cufe, xml_path, zip_key, factura_id))
+                _registrar_evento(factura_id, 'PROCESANDO',
+                                  f"En proceso en la DIAN. ZipKey={zip_key}")
+                return {'status': 'PROCESANDO', 'factura_id': factura_id, 'zip_key': zip_key}
+        else:
+            resultado = dian.enviar_factura(
+                xml_firmado    = xml_firmado,
+                numero_factura = numero_factura,
+                token_dian     = tenant.get('token_dian'),
+            )
 
         # ── Paso 9: Guardar ApplicationResponse ────────────────────────────────
         response_path = storage.guardar_response(
@@ -219,6 +270,18 @@ def procesar_factura(self, factura_id: str):
             factura_id, estado_final,
             resultado.get('description') or f"CUFE: {cufe_final[:30]}..."
         )
+
+        # ── Paso 11: Representación gráfica (PDF) — no debe romper el flujo ─────
+        try:
+            from services.pdf_builder import generar_pdf
+            pdf_bytes = generar_pdf(tenant, datos, numero_factura, cufe_final,
+                                    fecha_emision, hora_emision, estado_final)
+            pdf_path = storage.guardar_pdf(pdf_bytes, numero_factura)
+            with get_db_cursor() as cur:
+                cur.execute("UPDATE facturas SET pdf_path = %s WHERE id = %s",
+                            (pdf_path, factura_id))
+        except Exception as e:
+            logger.warning(f"No se pudo generar el PDF para {factura_id}: {e}")
 
         logger.info(f"Factura {factura_id} → {estado_final} ({numero_factura})")
         return {
@@ -285,6 +348,7 @@ def verificar_facturas_programadas():
             WHERE estado    = 'PENDIENTE'
               AND procesar_en <= NOW()
               AND intentos   = 0
+              AND requiere_aprobacion = FALSE
         """)
         listas = cur.fetchall()
 
