@@ -1,0 +1,51 @@
+{% extends "ui/base.html" %}
+{% block title %}Configuración de envío{% endblock %}
+{% block breadcrumb %}Configuración de envío a la DIAN{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-7">
+  <h5 class="fw-bold mb-3"><i class="bi bi-sliders me-2"></i>¿Cuándo se envían tus documentos a la DIAN?</h5>
+
+  <div class="alert {% if modo=='manual' %}alert-warning{% else %}alert-info{% endif %} small">
+    {% if modo == 'manual' %}
+    <i class="bi bi-hand-index me-1"></i><b>Modo MANUAL activo:</b> ningún documento se sube a la
+    DIAN hasta que tú lo <b>apruebes</b>. Quedan en “Mis Documentos” como PENDIENTE.
+    {% else %}
+    <i class="bi bi-clock me-1"></i><b>Modo automático:</b> los documentos se envían solos
+    <b>{{ (grace//1440 ~ ' día(s)') if grace>=1440 else ((grace//60 ~ ' hora(s)') if grace>=60 else (grace ~ ' min')) }}</b>
+    después de emitirlos. Antes de eso puedes aprobarlos o anularlos.
+    {% endif %}
+  </div>
+
+  <form method="POST" action="{{ url_for('ui.config_envio') }}" class="card p-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="form-check mb-2 p-2 border rounded {% if modo=='manual' %}border-warning bg-light{% endif %}">
+      <input class="form-check-input" type="radio" name="politica" value="manual" id="p-manual"
+             {% if modo=='manual' %}checked{% endif %}>
+      <label class="form-check-label" for="p-manual">
+        <b>Manual — no enviar nada hasta que yo apruebe</b><br>
+        <span class="small text-muted">Cada documento espera tu visto bueno. Tú decides cuáles aprobar (enviar) o rechazar (anular).</span>
+      </label>
+    </div>
+
+    <div class="small text-muted mt-2 mb-1">…o enviar automáticamente con un plazo para revisar/anular:</div>
+    {% for mins, label in presets %}
+    <div class="form-check">
+      <input class="form-check-input" type="radio" name="politica" value="{{ mins }}" id="p-{{ mins }}"
+             {% if modo!='manual' and grace==mins %}checked{% endif %}>
+      <label class="form-check-label" for="p-{{ mins }}">{{ label }}</label>
+    </div>
+    {% endfor %}
+
+    <button type="submit" class="btn btn-primary mt-3"><i class="bi bi-save me-1"></i>Guardar</button>
+  </form>
+
+  <div class="small text-muted mt-3">
+    <i class="bi bi-info-circle me-1"></i>Apruebas o rechazas cada documento desde <b>Mis Documentos</b>
+    (botones <span class="text-success">Aprobar/Enviar</span> y <span class="text-danger">Anular</span>) o desde su detalle.
+  </div>
+</div>
+</div>
+{% endblock %}

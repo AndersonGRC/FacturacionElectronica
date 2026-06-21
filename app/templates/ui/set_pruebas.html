@@ -1,0 +1,92 @@
+{% extends "ui/base.html" %}
+{% block title %}Set de Pruebas{% endblock %}
+{% block breadcrumb %}Set de Pruebas DIAN{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+  <h5 class="fw-bold mb-0"><i class="bi bi-clipboard-check me-2"></i>Set de Pruebas (Habilitación DIAN)</h5>
+</div>
+
+<!-- Selector de tenant -->
+<form method="GET" class="card p-3 mb-3">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-6">
+      <label class="form-label small fw-semibold mb-1">Cliente / Tenant</label>
+      <select name="tenant_id" class="form-select form-select-sm" onchange="this.form.submit()">
+        {% for t in tenants %}
+        <option value="{{ t.id }}" {% if sel == t.id %}selected{% endif %}>
+          {{ t.nombre }} — NIT {{ t.nit }} ({{ t.ambiente }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+</form>
+
+<!-- Progreso (aceptados) -->
+<div class="row g-3 mb-3">
+  <div class="col-md-4"><div class="card stat-card verde p-3">
+    <div class="text-muted small">Facturas aceptadas</div>
+    <div class="fs-3 fw-bold">{{ progreso.get('factura', 0) }}</div></div></div>
+  <div class="col-md-4"><div class="card stat-card azul p-3">
+    <div class="text-muted small">Notas crédito aceptadas</div>
+    <div class="fs-3 fw-bold">{{ progreso.get('nota_credito', 0) }}</div></div></div>
+  <div class="col-md-4"><div class="card stat-card gris p-3">
+    <div class="text-muted small">Notas débito aceptadas</div>
+    <div class="fs-3 fw-bold">{{ progreso.get('nota_debito', 0) }}</div></div></div>
+</div>
+
+<div class="row g-3">
+  <!-- Lote -->
+  <div class="col-lg-7">
+    <div class="card p-3 h-100">
+      <h6 class="fw-bold text-primary"><i class="bi bi-collection me-1"></i>Emitir lote</h6>
+      <p class="small text-muted">Genera y envía a la DIAN el lote con datos de ejemplo.
+        Las notas referencian las facturas <b>aceptadas</b> del cliente (emite primero las
+        facturas; cuando la DIAN las acepte, vuelve a correr el lote para las notas).</p>
+      <form method="POST" action="{{ url_for('ui.pruebas_lote') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="tenant_id" value="{{ sel }}">
+        <div class="row g-2">
+          <div class="col-4">
+            <label class="form-label small mb-1">Facturas</label>
+            <input name="n_fv" type="number" min="0" max="50" value="3" class="form-control form-control-sm">
+          </div>
+          <div class="col-4">
+            <label class="form-label small mb-1">Notas crédito</label>
+            <input name="n_nc" type="number" min="0" max="50" value="1" class="form-control form-control-sm">
+          </div>
+          <div class="col-4">
+            <label class="form-label small mb-1">Notas débito</label>
+            <input name="n_nd" type="number" min="0" max="50" value="1" class="form-control form-control-sm">
+          </div>
+        </div>
+        <button class="btn btn-primary mt-3" onclick="return confirm('¿Emitir y enviar el lote a la DIAN?')">
+          <i class="bi bi-send me-1"></i>Emitir lote
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Individual -->
+  <div class="col-lg-5">
+    <div class="card p-3 h-100">
+      <h6 class="fw-bold text-primary"><i class="bi bi-file-earmark me-1"></i>Emitir uno</h6>
+      <p class="small text-muted">Emite un documento de prueba suelto.</p>
+      <form method="POST" action="{{ url_for('ui.pruebas_individual') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="tenant_id" value="{{ sel }}">
+        <label class="form-label small mb-1">Tipo de documento</label>
+        <select name="tipo" class="form-select form-select-sm">
+          <option value="factura">Factura electrónica</option>
+          <option value="nota_credito">Nota crédito</option>
+          <option value="nota_debito">Nota débito</option>
+        </select>
+        <button class="btn btn-outline-primary mt-3 w-100">
+          <i class="bi bi-send me-1"></i>Emitir documento
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

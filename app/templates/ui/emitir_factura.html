@@ -1,0 +1,163 @@
+{% extends "ui/base.html" %}
+{% block title %}Emitir Factura{% endblock %}
+{% block breadcrumb %}Emitir · Factura electrónica{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+  <h5 class="fw-bold mb-0"><i class="bi bi-file-earmark-plus me-2"></i>Nueva Factura Electrónica</h5>
+</div>
+
+<form method="POST" action="{{ url_for('ui.emitir_factura') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="row g-3">
+    <!-- Adquiriente -->
+    <div class="col-lg-6">
+      <div class="card p-3 h-100">
+        <h6 class="fw-bold text-primary mb-3"><i class="bi bi-person me-1"></i>Adquiriente (cliente)</h6>
+        <div class="row g-2">
+          <div class="col-5">
+            <label class="form-label small mb-1">Tipo documento</label>
+            <select name="cli_tipo_doc" class="form-select form-select-sm">
+              {% for c, n in tipos_doc %}<option value="{{ c }}">{{ n }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-7">
+            <label class="form-label small mb-1">Número documento *</label>
+            <input name="cli_doc" class="form-control form-control-sm" required>
+          </div>
+          <div class="col-12">
+            <label class="form-label small mb-1">Nombre / Razón social *</label>
+            <input name="cli_nombre" class="form-control form-control-sm" required>
+          </div>
+          <div class="col-6">
+            <label class="form-label small mb-1">Email *</label>
+            <input name="cli_email" type="email" class="form-control form-control-sm" required>
+          </div>
+          <div class="col-6">
+            <label class="form-label small mb-1">Teléfono</label>
+            <input name="cli_telefono" class="form-control form-control-sm">
+          </div>
+          <div class="col-8">
+            <label class="form-label small mb-1">Dirección</label>
+            <input name="cli_direccion" class="form-control form-control-sm">
+          </div>
+          <div class="col-4">
+            <label class="form-label small mb-1">Municipio (DIVIPOLA)</label>
+            <input name="cli_municipio" class="form-control form-control-sm" value="11001">
+          </div>
+          <input type="hidden" name="cli_tipo_persona" value="natural">
+        </div>
+      </div>
+    </div>
+
+    <!-- Datos del documento -->
+    <div class="col-lg-6">
+      <div class="card p-3 h-100">
+        <h6 class="fw-bold text-primary mb-3"><i class="bi bi-receipt me-1"></i>Datos del documento</h6>
+        <div class="row g-2">
+          <div class="col-6">
+            <label class="form-label small mb-1">Referencia (opcional)</label>
+            <input name="referencia" class="form-control form-control-sm" placeholder="Se genera automático">
+          </div>
+          <div class="col-6">
+            <label class="form-label small mb-1">Forma de pago</label>
+            <select name="metodo_pago" class="form-select form-select-sm">
+              {% for c, n in metodos %}<option value="{{ c }}">{{ n }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-12">
+            <label class="form-label small mb-1">Notas</label>
+            <input name="notas" class="form-control form-control-sm">
+          </div>
+        </div>
+        <div class="alert alert-info py-2 px-3 small mt-3 mb-0">
+          <i class="bi bi-clock-history me-1"></i>Tras emitir, el documento queda
+          <b>{{ grace }} minuto(s)</b> en espera; puedes <b>anularlo</b> antes de que se
+          envíe a la DIAN.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Líneas -->
+  <div class="card p-3 mt-3">
+    <div class="d-flex align-items-center mb-2">
+      <h6 class="fw-bold text-primary mb-0"><i class="bi bi-list-ul me-1"></i>Líneas de detalle</h6>
+      <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="add-row">
+        <i class="bi bi-plus-lg"></i> Agregar línea
+      </button>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0" id="items-table">
+        <thead class="table-light">
+          <tr>
+            <th style="width:13%">Código</th>
+            <th style="width:37%">Descripción *</th>
+            <th style="width:12%">Cantidad</th>
+            <th style="width:18%">Precio unitario</th>
+            <th style="width:12%">IVA %</th>
+            <th style="width:8%"></th>
+          </tr>
+        </thead>
+        <tbody id="items-body">
+          <tr>
+            <td><input name="item_codigo" class="form-control form-control-sm"></td>
+            <td><input name="item_descripcion" class="form-control form-control-sm" list="catalogo-list" autocomplete="off" required></td>
+            <td><input name="item_cantidad" type="number" step="any" min="0" class="form-control form-control-sm" value="1"></td>
+            <td><input name="item_precio" type="number" step="any" min="0" class="form-control form-control-sm" value="0"></td>
+            <td><input name="item_iva" type="number" step="any" min="0" max="100" class="form-control form-control-sm" value="0"></td>
+            <td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger del-row"><i class="bi bi-trash"></i></button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <datalist id="catalogo-list"></datalist>
+  <div class="form-text mt-1" id="catalogo-hint"></div>
+
+  <div class="mt-3 d-flex gap-2">
+    <button type="submit" class="btn btn-primary"><i class="bi bi-send me-1"></i>Emitir factura</button>
+    <a href="{{ url_for('ui.facturas') }}" class="btn btn-outline-secondary">Cancelar</a>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const body = document.getElementById('items-body');
+  document.getElementById('add-row').addEventListener('click', () => {
+    const r = body.rows[0].cloneNode(true);
+    r.querySelectorAll('input').forEach(i => { if (i.name === 'item_cantidad') i.value = '1';
+      else if (i.name === 'item_precio' || i.name === 'item_iva') i.value = '0'; else i.value = ''; });
+    body.appendChild(r);
+  });
+  body.addEventListener('click', e => {
+    if (e.target.closest('.del-row') && body.rows.length > 1) e.target.closest('tr').remove();
+  });
+
+  // Catálogo CyberShop (autocompletar líneas) — opcional, no rompe si no hay integración
+  let catMap = {};
+  fetch('{{ url_for("ui.catalogo_json") }}').then(r => r.json()).then(prods => {
+    if (!prods || !prods.length) return;
+    const dl = document.getElementById('catalogo-list');
+    prods.forEach(p => {
+      catMap[p.descripcion.toLowerCase()] = p;
+      const o = document.createElement('option'); o.value = p.descripcion; dl.appendChild(o);
+    });
+    document.getElementById('catalogo-hint').textContent =
+      'Catálogo de tu tienda CyberShop disponible: empieza a escribir la descripción.';
+  }).catch(() => {});
+
+  body.addEventListener('input', e => {
+    if (e.target.name !== 'item_descripcion') return;
+    const p = catMap[e.target.value.trim().toLowerCase()];
+    if (!p) return;
+    const tr = e.target.closest('tr');
+    if (p.codigo) tr.querySelector('[name=item_codigo]').value = p.codigo;
+    if (p.precio) tr.querySelector('[name=item_precio]').value = p.precio;
+    tr.querySelector('[name=item_iva]').value = p.iva || 0;
+  });
+</script>
+{% endblock %}

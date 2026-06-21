@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+  @page { size: a4 portrait; margin: 1.4cm 1.2cm; }
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 8.5pt; color: #222; }
+  .brand { color: {{ color }}; }
+  .bg-brand { background-color: {{ color }}; color: #fff; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { vertical-align: top; }
+  .hdr-title { font-size: 14pt; font-weight: bold; }
+  .hdr-box { background-color: {{ color }}; color: #fff; padding: 8px 10px; }
+  .hdr-box .num { font-size: 11pt; font-weight: bold; }
+  .emisor-name { font-size: 12pt; font-weight: bold; color: {{ color }}; }
+  .muted { color: #666; }
+  .panel { border: 1px solid #ddd; padding: 7px 9px; }
+  .panel-title { font-size: 8pt; font-weight: bold; text-transform: uppercase;
+                 color: {{ color }}; border-bottom: 1.5px solid {{ color }};
+                 padding-bottom: 2px; margin-bottom: 4px; }
+  .items th { background-color: {{ color }}; color: #fff; padding: 5px 4px;
+              font-size: 8pt; text-align: left; }
+  .items td { border-bottom: 1px solid #eee; padding: 4px; }
+  .r { text-align: right; } .c { text-align: center; }
+  .tot td { padding: 3px 8px; }
+  .tot .total-row td { background-color: {{ color }}; color: #fff;
+                       font-weight: bold; font-size: 10pt; }
+  .cufe { font-family: Courier, monospace; font-size: 7pt; word-wrap: break-word; }
+  .foot { font-size: 7pt; color: #777; }
+  .badge { background-color: #e8f0fe; color: {{ color }}; padding: 2px 6px;
+           font-size: 7pt; font-weight: bold; }
+  .badge-test { background-color: #fff3cd; color: #8a6d3b; }
+</style>
+</head>
+<body>
+
+  <!-- Encabezado -->
+  <table>
+    <tr>
+      <td style="width: 58%;">
+        {% if logo_url %}<img src="{{ logo_url }}" height="54"/><br/>{% endif %}
+        <span class="emisor-name">{{ emisor.nombre }}</span><br/>
+        <span class="muted">NIT {{ emisor.nit }} &nbsp;·&nbsp; {{ emisor.regimen }}</span><br/>
+        <span class="muted">{{ emisor.direccion }} — {{ emisor.ciudad }}</span><br/>
+        <span class="muted">{{ emisor.telefono }} &nbsp;·&nbsp; {{ emisor.email }}</span>
+      </td>
+      <td style="width: 42%;">
+        <div class="hdr-box">
+          <div style="font-size: 9pt;">{{ titulo }}</div>
+          <div class="num">No. {{ numero }}</div>
+          <div style="font-size: 7.5pt;">Fecha: {{ fecha }} {{ hora }}</div>
+        </div>
+        <div style="padding: 4px 2px;">
+          {% if estado == 'ACEPTADA' %}<span class="badge">DOCUMENTO VALIDADO POR LA DIAN</span>{% endif %}
+          {% if ambiente_prueba %} <span class="badge badge-test">AMBIENTE DE PRUEBAS</span>{% endif %}
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <div style="height: 6px;"></div>
+
+  <!-- Resolución -->
+  {% if not es_nota %}
+  <div class="panel" style="font-size: 7.5pt;">
+    <b class="brand">Autorización de numeración DIAN</b>:
+    Resolución {{ resolucion.numero }} · Prefijo {{ resolucion.prefijo }} ·
+    Rango {{ resolucion.desde }} al {{ resolucion.hasta }} · Vigencia hasta {{ resolucion.vigencia }}
+  </div>
+  {% else %}
+  <div class="panel" style="font-size: 7.5pt;">
+    <b class="brand">Documento de referencia</b>:
+    Factura {{ doc_ref.numero }} ({{ doc_ref.fecha }}) ·
+    Concepto: {{ concepto.descripcion }}
+  </div>
+  {% endif %}
+
+  <div style="height: 6px;"></div>
+
+  <!-- Emisor / Adquiriente -->
+  <table>
+    <tr>
+      <td style="width: 50%; padding-right: 5px;">
+        <div class="panel">
+          <div class="panel-title">Emisor</div>
+          <b>{{ emisor.nombre }}</b><br/>
+          NIT: {{ emisor.nit }}<br/>
+          {{ emisor.direccion }}, {{ emisor.ciudad }}<br/>
+          {{ emisor.email }} · {{ emisor.telefono }}
+        </div>
+      </td>
+      <td style="width: 50%; padding-left: 5px;">
+        <div class="panel">
+          <div class="panel-title">Adquiriente</div>
+          <b>{{ adquiriente.nombre }}</b><br/>
+          Doc: {{ adquiriente.doc }}<br/>
+          {{ adquiriente.direccion or 'No informado' }}<br/>
+          {{ adquiriente.email }} · {{ adquiriente.telefono }}
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <div style="height: 8px;"></div>
+
+  <!-- Detalle -->
+  <table class="items">
+    <thead>
+      <tr>
+        <th style="width: 12%;">Código</th>
+        <th style="width: 40%;">Descripción</th>
+        <th class="c" style="width: 8%;">Cant.</th>
+        <th class="r" style="width: 15%;">V. Unitario</th>
+        <th class="c" style="width: 10%;">IVA</th>
+        <th class="r" style="width: 15%;">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for it in items %}
+      <tr>
+        <td>{{ it.codigo }}</td>
+        <td>{{ it.descripcion }}</td>
+        <td class="c">{{ it.cantidad }}</td>
+        <td class="r">{{ it.precio }}</td>
+        <td class="c">{{ it.iva_pct }}</td>
+        <td class="r">{{ it.total }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div style="height: 8px;"></div>
+
+  <!-- Totales + forma de pago -->
+  <table>
+    <tr>
+      <td style="width: 58%;">
+        <div class="panel" style="font-size: 7.5pt;">
+          <b class="brand">Forma de pago:</b> Contado &nbsp;·&nbsp;
+          <b class="brand">Medio:</b> {{ metodo_pago }} &nbsp;·&nbsp;
+          <b class="brand">Moneda:</b> {{ moneda }}
+          {% if notas %}<br/><span class="muted">{{ notas }}</span>{% endif %}
+        </div>
+      </td>
+      <td style="width: 42%;">
+        <table class="tot">
+          <tr><td>Subtotal</td><td class="r">{{ subtotal }}</td></tr>
+          <tr><td>IVA</td><td class="r">{{ iva }}</td></tr>
+          <tr class="total-row"><td>TOTAL A PAGAR</td><td class="r">{{ total }}</td></tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <div style="height: 10px;"></div>
+
+  <!-- CUFE + QR -->
+  <table>
+    <tr>
+      <td style="width: 18%;">
+        <img src="{{ qr_b64 }}" style="width: 90px; height: 90px;"/>
+      </td>
+      <td style="width: 82%; padding-left: 8px;">
+        <div class="panel-title">{{ 'CUDE' if es_nota else 'CUFE' }} — Código único</div>
+        <div class="cufe">{{ cufe }}</div>
+        <div class="foot" style="margin-top: 6px;">
+          Representación gráfica de la {{ titulo|lower }}. Validez y autenticidad
+          verificables en el portal de la DIAN escaneando el código QR.<br/>
+          Generado por el Software CyberShop.
+        </div>
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

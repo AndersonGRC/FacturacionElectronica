@@ -59,18 +59,18 @@
                 <i class="bi bi-clock me-1"></i>
                 <strong>Envío programado:</strong> {{ factura.procesar_en }}
               </div>
-              {% if factura.estado == 'PENDIENTE' and not es_tenant %}
+              {% if factura.estado == 'PENDIENTE' %}
               <div class="ms-auto d-flex gap-2">
-                <form method="POST" action="{{ url_for('ui.factura_enviar_ahora', factura_id=factura.id) }}"
+                <form method="POST" action="{{ url_for('ui.factura_enviar_ya', factura_id=factura.id) }}"
                       onsubmit="return confirm('¿Enviar AHORA a la DIAN? Esta acción es irreversible.')">
                   <button class="btn btn-sm btn-warning">
                     <i class="bi bi-send me-1"></i>Enviar ahora
                   </button>
                 </form>
-                <form method="POST" action="{{ url_for('ui.factura_cancelar', factura_id=factura.id) }}"
-                      onsubmit="return confirm('¿Cancelar esta factura? No se enviará a la DIAN.')">
+                <form method="POST" action="{{ url_for('ui.factura_anular', factura_id=factura.id) }}"
+                      onsubmit="return confirm('¿Anular este documento? No se enviará a la DIAN.')">
                   <button class="btn btn-sm btn-outline-danger">
-                    <i class="bi bi-x-circle me-1"></i>Cancelar
+                    <i class="bi bi-x-circle me-1"></i>Anular
                   </button>
                 </form>
               </div>
@@ -118,10 +118,15 @@
             </a>
           {% else %}<span class="ms-auto text-muted">No generado</span>{% endif %}
         </li>
-        <li class="list-group-item d-flex align-items-center small text-muted">
-          <i class="bi bi-file-earmark-pdf me-2"></i>
-          <span>PDF Representación</span>
-          <span class="ms-auto badge bg-light text-dark">Fase 2</span>
+        <li class="list-group-item d-flex align-items-center small">
+          <i class="bi bi-file-earmark-pdf me-2 text-danger"></i>
+          <span>PDF Representación Gráfica</span>
+          {% if factura.pdf_path %}
+            <a href="{{ url_for('ui.descargar_archivo', factura_id=factura.id, tipo='pdf') }}"
+               class="ms-auto btn btn-sm btn-outline-danger">
+              <i class="bi bi-download"></i> Descargar
+            </a>
+          {% else %}<span class="ms-auto text-muted">No generado</span>{% endif %}
         </li>
       </ul>
     </div>

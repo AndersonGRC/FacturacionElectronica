@@ -1,0 +1,137 @@
+{% extends "ui/base.html" %}
+{% block title %}Emitir {{ titulo }}{% endblock %}
+{% block breadcrumb %}Emitir · {{ titulo }}{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3">
+  <h5 class="fw-bold mb-0"><i class="bi bi-file-earmark-minus me-2"></i>Nueva {{ titulo }}</h5>
+  <div class="btn-group btn-group-sm ms-3">
+    <a href="{{ url_for('ui.emitir_nota', tipo='nota_credito') }}"
+       class="btn btn-outline-primary {% if tipo=='nota_credito' %}active{% endif %}">Crédito</a>
+    <a href="{{ url_for('ui.emitir_nota', tipo='nota_debito') }}"
+       class="btn btn-outline-primary {% if tipo=='nota_debito' %}active{% endif %}">Débito</a>
+  </div>
+</div>
+
+{% if not facturas %}
+<div class="alert alert-warning">No tienes facturas <b>aceptadas</b> para referenciar.
+  Primero emite y deja que la DIAN acepte una factura.</div>
+{% endif %}
+
+<form method="POST" action="{{ url_for('ui.emitir_nota', tipo=tipo) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="ref_numero" id="ref_numero">
+  <input type="hidden" name="ref_cufe" id="ref_cufe">
+  <input type="hidden" name="ref_fecha" id="ref_fecha">
+
+  <div class="row g-3">
+    <!-- Factura referenciada + concepto -->
+    <div class="col-lg-6">
+      <div class="card p-3 h-100">
+        <h6 class="fw-bold text-primary mb-3"><i class="bi bi-link-45deg me-1"></i>Factura que ajusta</h6>
+        <div class="mb-2">
+          <label class="form-label small mb-1">Factura electrónica *</label>
+          <select id="factura-sel" class="form-select form-select-sm" required>
+            <option value="">— Selecciona la factura —</option>
+            {% for f in facturas %}
+            <option value="{{ f.numero }}" data-cufe="{{ f.cufe }}" data-fecha="{{ f.fecha }}">
+              {{ f.numero }} · {{ f.fecha }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label small mb-1">Concepto *</label>
+          <select name="concepto_codigo" class="form-select form-select-sm">
+            {% for c, n in conceptos %}<option value="{{ c }}">{{ n }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Adquiriente -->
+    <div class="col-lg-6">
+      <div class="card p-3 h-100">
+        <h6 class="fw-bold text-primary mb-3"><i class="bi bi-person me-1"></i>Adquiriente</h6>
+        <div class="row g-2">
+          <div class="col-5">
+            <select name="cli_tipo_doc" class="form-select form-select-sm">
+              {% for c, n in tipos_doc %}<option value="{{ c }}">{{ n }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-7"><input name="cli_doc" class="form-control form-control-sm" placeholder="Número documento *" required></div>
+          <div class="col-12"><input name="cli_nombre" class="form-control form-control-sm" placeholder="Nombre / Razón social *" required></div>
+          <div class="col-6"><input name="cli_email" type="email" class="form-control form-control-sm" placeholder="Email *" required></div>
+          <div class="col-6"><input name="cli_telefono" class="form-control form-control-sm" placeholder="Teléfono"></div>
+          <div class="col-8"><input name="cli_direccion" class="form-control form-control-sm" placeholder="Dirección"></div>
+          <div class="col-4"><input name="cli_municipio" class="form-control form-control-sm" value="11001"></div>
+          <input type="hidden" name="cli_tipo_persona" value="natural">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-2 mt-1">
+    <div class="col-6">
+      <input name="metodo_pago" type="hidden" value="10">
+      <input name="notas" class="form-control form-control-sm" placeholder="Notas (opcional)">
+    </div>
+  </div>
+
+  <!-- Líneas -->
+  <div class="card p-3 mt-3">
+    <div class="d-flex align-items-center mb-2">
+      <h6 class="fw-bold text-primary mb-0"><i class="bi bi-list-ul me-1"></i>Líneas a ajustar</h6>
+      <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="add-row"><i class="bi bi-plus-lg"></i> Agregar línea</button>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead class="table-light"><tr>
+          <th style="width:13%">Código</th><th style="width:37%">Descripción *</th>
+          <th style="width:12%">Cantidad</th><th style="width:18%">Precio</th>
+          <th style="width:12%">IVA %</th><th style="width:8%"></th>
+        </tr></thead>
+        <tbody id="items-body">
+          <tr>
+            <td><input name="item_codigo" class="form-control form-control-sm"></td>
+            <td><input name="item_descripcion" class="form-control form-control-sm" required></td>
+            <td><input name="item_cantidad" type="number" step="any" min="0" class="form-control form-control-sm" value="1"></td>
+            <td><input name="item_precio" type="number" step="any" min="0" class="form-control form-control-sm" value="0"></td>
+            <td><input name="item_iva" type="number" step="any" min="0" max="100" class="form-control form-control-sm" value="0"></td>
+            <td class="text-center"><button type="button" class="btn btn-sm btn-outline-danger del-row"><i class="bi bi-trash"></i></button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="mt-3 d-flex gap-2">
+    <button type="submit" class="btn btn-primary" {% if not facturas %}disabled{% endif %}>
+      <i class="bi bi-send me-1"></i>Emitir {{ titulo }}
+    </button>
+    <a href="{{ url_for('ui.facturas') }}" class="btn btn-outline-secondary">Cancelar</a>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const sel = document.getElementById('factura-sel');
+  sel.addEventListener('change', () => {
+    const o = sel.selectedOptions[0];
+    document.getElementById('ref_numero').value = o.value || '';
+    document.getElementById('ref_cufe').value = o.dataset.cufe || '';
+    document.getElementById('ref_fecha').value = o.dataset.fecha || '';
+  });
+  const body = document.getElementById('items-body');
+  document.getElementById('add-row').addEventListener('click', () => {
+    const r = body.rows[0].cloneNode(true);
+    r.querySelectorAll('input').forEach(i => { if (i.name === 'item_cantidad') i.value = '1';
+      else if (i.name === 'item_precio' || i.name === 'item_iva') i.value = '0'; else i.value = ''; });
+    body.appendChild(r);
+  });
+  body.addEventListener('click', e => {
+    if (e.target.closest('.del-row') && body.rows.length > 1) e.target.closest('tr').remove();
+  });
+</script>
+{% endblock %}

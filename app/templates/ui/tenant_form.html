@@ -22,6 +22,45 @@
 </div>
 {% endif %}
 
+{% if tenant %}
+<!-- Indicador + botón de AMBIENTE -->
+<div class="card mb-4" style="border:2px solid {% if tenant.ambiente=='produccion' %}#198754{% else %}#ffc107{% endif %};">
+  <div class="card-body d-flex align-items-center flex-wrap gap-2">
+    <div>
+      <div class="small text-muted">Modo de facturación actual</div>
+      {% if tenant.ambiente == 'produccion' %}
+      <span class="badge bg-success fs-6"><i class="bi bi-broadcast me-1"></i>PRODUCCIÓN — facturas reales con validez legal</span>
+      {% else %}
+      <span class="badge bg-warning text-dark fs-6"><i class="bi bi-tools me-1"></i>HABILITACIÓN / PRUEBAS — sin validez legal</span>
+      {% endif %}
+    </div>
+    <div class="ms-auto">
+      {% if tenant.ambiente == 'produccion' %}
+      <form method="POST" action="{{ url_for('ui.cambiar_ambiente', tenant_id=tenant.id) }}"
+            onsubmit="return confirm('¿Cambiar a PRUEBAS (habilitación)? Se guardará tu configuración de producción y se cargará la de pruebas. Las facturas dejarán de tener validez legal.')">
+        <input type="hidden" name="destino" value="habilitacion">
+        <button class="btn btn-outline-warning"><i class="bi bi-arrow-left-right me-1"></i>Cambiar a Pruebas</button>
+      </form>
+      {% else %}
+      <form method="POST" action="{{ url_for('ui.cambiar_ambiente', tenant_id=tenant.id) }}"
+            onsubmit="return confirm('¿Pasar a PRODUCCIÓN? A partir de aquí las facturas son REALES y con validez legal. Asegúrate de tener la resolución y credenciales de producción.')">
+        <input type="hidden" name="destino" value="produccion">
+        <button class="btn btn-success"><i class="bi bi-broadcast me-1"></i>Pasar a Producción</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if tenant and tenant.solicitud_produccion_en and tenant.ambiente == 'habilitacion' %}
+<div class="alert alert-info d-flex align-items-center mb-4">
+  <i class="bi bi-bell-fill me-2 fs-5"></i>
+  <div>El cliente <strong>solicitó pasar a producción</strong> ({{ tenant.solicitud_produccion_en }}).
+  Carga sus datos reales de producción y pulsa “Pasar a Producción”.</div>
+</div>
+{% endif %}
+
 <div class="row g-4">
 
   <!-- Formulario principal -->
@@ -67,11 +106,17 @@
                      value="{{ tenant.prefijo if tenant else 'SETP' }}" maxlength="10">
             </div>
             <div class="col-4">
-              <label class="form-label small fw-semibold">Ambiente *</label>
-              <select name="ambiente" class="form-select">
-                <option value="habilitacion" {% if not tenant or tenant.ambiente=='habilitacion' %}selected{% endif %}>Habilitación</option>
-                <option value="produccion"   {% if tenant and tenant.ambiente=='produccion' %}selected{% endif %}>Producción</option>
-              </select>
+              <label class="form-label small fw-semibold">Ambiente</label>
+              {% if tenant %}
+              <div class="form-control bg-light">
+                {% if tenant.ambiente=='produccion' %}<span class="badge bg-success">Producción</span>
+                {% else %}<span class="badge bg-warning text-dark">Habilitación</span>{% endif %}
+                <span class="small text-muted">— usa el botón de arriba</span>
+              </div>
+              {% else %}
+              <div class="form-control bg-light"><span class="badge bg-warning text-dark">Habilitación</span>
+                <span class="small text-muted">(por defecto)</span></div>
+              {% endif %}
             </div>
             <div class="col-4">
               <label class="form-label small fw-semibold">Estado</label>
@@ -96,6 +141,14 @@
               <input type="text" name="clave_tecnica" class="form-control font-monospace"
                      value="{{ tenant.clave_tecnica if tenant else '' }}"
                      placeholder="fc8eac422eba16e22ffd8c6f94b3f40a6e38162c">
+            </div>
+            <div class="col-12">
+              <label class="form-label small fw-semibold">TestSetId (set de pruebas — solo habilitación)</label>
+              <input type="text" name="test_set_id" class="form-control font-monospace"
+                     value="{{ tenant.test_set_id if tenant else '' }}"
+                     placeholder="29df4c73-5770-4599-bc4c-18aa06d00b1b">
+              <div class="form-text">Mientras esté lleno y el ambiente sea habilitación, los
+                documentos se envían al <b>set de pruebas</b> (SendTestSetAsync). Vacíalo al pasar a producción.</div>
             </div>
           </div>
 
@@ -129,6 +182,86 @@
             </div>
           </div>
 
+          <hr class="my-3">
+          <h6 class="fw-semibold text-muted mb-3"><i class="bi bi-cash-coin me-1"></i>Datos de emisión</h6>
+          <div class="row g-3">
+            <div class="col-4">
+              <label class="form-label small fw-semibold">PIN software (CUDE notas)</label>
+              <input type="text" name="software_pin" class="form-control"
+                     value="{{ tenant.software_pin if tenant else '' }}" placeholder="11222">
+            </div>
+            <div class="col-4">
+              <label class="form-label small fw-semibold">Régimen IVA</label>
+              <select name="regimen_codigo" class="form-select">
+                <option value="48" {% if tenant and tenant.regimen_codigo=='48' %}selected{% endif %}>Responsable de IVA</option>
+                <option value="49" {% if not tenant or tenant.regimen_codigo=='49' %}selected{% endif %}>No responsable de IVA</option>
+              </select>
+            </div>
+            <div class="col-4">
+              <label class="form-label small fw-semibold">Responsabilidad fiscal</label>
+              <input type="text" name="responsabilidad_fiscal" class="form-control"
+                     value="{{ tenant.responsabilidad_fiscal if tenant else '' }}" placeholder="O-13 / R-99-PN">
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold">Dirección</label>
+              <input type="text" name="direccion" class="form-control" value="{{ tenant.direccion if tenant else '' }}">
+            </div>
+            <div class="col-3">
+              <label class="form-label small fw-semibold">Municipio (cód.)</label>
+              <input type="text" name="municipio_codigo" class="form-control" value="{{ tenant.municipio_codigo if tenant else '11001' }}">
+            </div>
+            <div class="col-3">
+              <label class="form-label small fw-semibold">Municipio (nombre)</label>
+              <input type="text" name="municipio_nombre" class="form-control" value="{{ tenant.municipio_nombre if tenant else 'Bogotá, D.C.' }}">
+            </div>
+            <div class="col-3">
+              <label class="form-label small fw-semibold">Depto (cód.)</label>
+              <input type="text" name="departamento_codigo" class="form-control" value="{{ tenant.departamento_codigo if tenant else '11' }}">
+            </div>
+            <div class="col-3">
+              <label class="form-label small fw-semibold">Depto (nombre)</label>
+              <input type="text" name="departamento_nombre" class="form-control" value="{{ tenant.departamento_nombre if tenant else 'Bogotá' }}">
+            </div>
+            <div class="col-3">
+              <label class="form-label small fw-semibold">Email</label>
+              <input type="text" name="email" class="form-control" value="{{ tenant.email if tenant else '' }}">
+            </div>
+            <div class="col-3">
+              <label class="form-label small fw-semibold">Teléfono</label>
+              <input type="text" name="telefono" class="form-control" value="{{ tenant.telefono if tenant else '' }}">
+            </div>
+          </div>
+
+          <hr class="my-3">
+          <h6 class="fw-semibold text-muted mb-3"><i class="bi bi-palette me-1"></i>Marca, plazo e integración</h6>
+          <div class="row g-3">
+            <div class="col-3">
+              <label class="form-label small fw-semibold">Color de marca</label>
+              <input type="color" name="color_primario" class="form-control form-control-color"
+                     value="{{ tenant.color_primario if tenant and tenant.color_primario else '#0B5394' }}">
+            </div>
+            <div class="col-6">
+              <label class="form-label small fw-semibold">Logo (URL o ruta)</label>
+              <input type="text" name="logo_url" class="form-control" value="{{ tenant.logo_url if tenant else '' }}"
+                     placeholder="https://tu-tienda.co/static/img/Logo.png">
+            </div>
+            <div class="col-3">
+              <label class="form-label small fw-semibold">Plazo anular (min)</label>
+              <input type="number" name="grace_minutos" class="form-control" min="0" max="1440"
+                     value="{{ tenant.grace_minutos if tenant and tenant.grace_minutos is not none else '' }}" placeholder="30">
+            </div>
+            <div class="col-7">
+              <label class="form-label small fw-semibold">CyberShop URL (catálogo)</label>
+              <input type="text" name="cybershop_base_url" class="form-control"
+                     value="{{ tenant.cybershop_base_url if tenant else '' }}" placeholder="https://tu-tienda.cybershopcol.com">
+            </div>
+            <div class="col-5">
+              <label class="form-label small fw-semibold">CyberShop Sync Key</label>
+              <input type="text" name="cybershop_sync_key" class="form-control font-monospace"
+                     value="{{ tenant.cybershop_sync_key if tenant else '' }}">
+            </div>
+          </div>
+
           <div class="mt-4 d-flex gap-2">
             <button type="submit" class="btn btn-primary">
               <i class="bi bi-save me-1"></i>Guardar
@@ -144,6 +277,43 @@
   <div class="col-lg-5 d-flex flex-column gap-3">
 
     {% if tenant %}
+    <!-- Datos de Producción (anticipados) -->
+    <div class="card border-success">
+      <div class="card-header bg-white fw-semibold text-success">
+        <i class="bi bi-broadcast me-2"></i>Datos de Producción
+      </div>
+      <div class="card-body">
+        <p class="small text-muted mb-2">Cárgalos con la resolución y credenciales reales de la DIAN.
+          Completos, se habilita el botón “Pasar a Producción”.</p>
+        {% set prod = (tenant.ambientes or {}).get('produccion', {}) %}
+        <form method="POST" action="{{ url_for('ui.guardar_produccion', tenant_id=tenant.id) }}">
+          <div class="row g-2">
+            <div class="col-12"><label class="form-label small mb-0">Software ID</label>
+              <input name="software_id" class="form-control form-control-sm font-monospace" value="{{ prod.get('software_id') or '' }}"></div>
+            <div class="col-6"><label class="form-label small mb-0">PIN software</label>
+              <input name="software_pin" class="form-control form-control-sm" value="{{ prod.get('software_pin') or '' }}"></div>
+            <div class="col-6"><label class="form-label small mb-0">Prefijo</label>
+              <input name="prefijo" class="form-control form-control-sm" value="{{ prod.get('prefijo') or '' }}"></div>
+            <div class="col-12"><label class="form-label small mb-0">Clave técnica</label>
+              <input name="clave_tecnica" class="form-control form-control-sm font-monospace" value="{{ prod.get('clave_tecnica') or '' }}"></div>
+            <div class="col-12"><label class="form-label small mb-0">N° resolución</label>
+              <input name="resolucion_dian" class="form-control form-control-sm" value="{{ prod.get('resolucion_dian') or '' }}"></div>
+            <div class="col-6"><label class="form-label small mb-0">Desde #</label>
+              <input name="resolucion_desde" type="number" class="form-control form-control-sm" value="{{ prod.get('resolucion_desde') or '' }}"></div>
+            <div class="col-6"><label class="form-label small mb-0">Hasta #</label>
+              <input name="resolucion_hasta" type="number" class="form-control form-control-sm" value="{{ prod.get('resolucion_hasta') or '' }}"></div>
+            <div class="col-6"><label class="form-label small mb-0">Fecha resol.</label>
+              <input name="resolucion_fecha" type="date" class="form-control form-control-sm" value="{{ prod.get('resolucion_fecha') or '' }}"></div>
+            <div class="col-6"><label class="form-label small mb-0">Vigencia</label>
+              <input name="resolucion_vigencia" type="date" class="form-control form-control-sm" value="{{ prod.get('resolucion_vigencia') or '' }}"></div>
+            <div class="col-6"><label class="form-label small mb-0">Consecutivo inicial</label>
+              <input name="consecutivo_actual" type="number" class="form-control form-control-sm" value="{{ prod.get('consecutivo_actual') or 0 }}"></div>
+          </div>
+          <button class="btn btn-sm btn-success w-100 mt-2"><i class="bi bi-save me-1"></i>Guardar datos de producción</button>
+        </form>
+      </div>
+    </div>
+
     <!-- Certificado -->
     <div class="card">
       <div class="card-header bg-white fw-semibold">
