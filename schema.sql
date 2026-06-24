@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS facturas (
     referencia_pedido VARCHAR(100) NOT NULL,
     -- Ciclo de vida
     estado            VARCHAR(20)  NOT NULL DEFAULT 'PENDIENTE'
-                          CHECK (estado IN ('PENDIENTE','PROCESANDO','ACEPTADA','RECHAZADA','ERROR')),
+                          CHECK (estado IN ('PENDIENTE','PROCESANDO','ACEPTADA','RECHAZADA','ERROR','CANCELADA')),
     -- Resultado DIAN
     numero_factura    VARCHAR(50),
     cufe              VARCHAR(200),              -- Código Único de Factura Electrónica (SHA384)

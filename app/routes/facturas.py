@@ -46,8 +46,17 @@ def crear_factura():
     if not datos:
         return jsonify({"error": "Se requiere JSON en el body"}), 400
 
+    # Respetar el plazo/modo de aprobación POR TENANT (el "N días que decide el
+    # cliente") — igual que el portal. Si es manual, no se envía hasta aprobar.
+    from config import Config
+    modo  = tenant.get('modo_aprobacion') or 'automatico'
+    grace = int(tenant.get('grace_minutos') or Config.GRACE_MINUTES)
     try:
-        res = emitir_documento(tenant['id'], datos)
+        if modo == 'manual':
+            res = emitir_documento(tenant['id'], datos, delay_seconds=60,
+                                   requiere_aprobacion=True)
+        else:
+            res = emitir_documento(tenant['id'], datos, delay_seconds=grace * 60)
     except EmisionError as e:
         return jsonify({"error": e.mensaje}), e.status
 
