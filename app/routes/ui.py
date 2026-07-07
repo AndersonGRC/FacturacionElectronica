@@ -58,6 +58,27 @@ from tasks.facturacion import procesar_factura
 ui_bp = Blueprint('ui', __name__, url_prefix='/ui')
 
 
+# ── Estados en lenguaje humano (para el dueño no técnico) ───────────────────
+ESTADOS_INFO = {
+    'PENDIENTE':  ('En espera de envío', 'PENDIENTE', 'Aún no se envía a la DIAN. Puedes anularla antes del envío.'),
+    'PROCESANDO': ('Enviando a la DIAN…', 'PROCESANDO', 'Se está transmitiendo a la DIAN.'),
+    'ACEPTADA':   ('Aceptada por la DIAN', 'ACEPTADA', 'Factura válida legalmente.'),
+    'RECHAZADA':  ('Rechazada — revisa el motivo', 'RECHAZADA', 'La DIAN la rechazó. Abre el detalle para ver por qué.'),
+    'ERROR':      ('Error de envío', 'ERROR', 'Hubo un problema técnico. Reintenta o contacta soporte.'),
+    'CANCELADA':  ('Anulada', 'CANCELADA', 'Documento anulado antes de enviarse.'),
+}
+
+
+def _estado_info(estado):
+    lbl, cls, hint = ESTADOS_INFO.get((estado or '').upper(), (estado or '—', 'ERROR', ''))
+    return {'label': lbl, 'cls': cls, 'hint': hint}
+
+
+@ui_bp.app_context_processor
+def _inject_helpers():
+    return {'estado_info': _estado_info}
+
+
 # ── Auth decorators ────────────────────────────────────────────────────────────
 
 def _login_admin(f):
@@ -258,7 +279,7 @@ def tenant_auto_login():
 
     with get_db_cursor(dict_cursor=True) as cur:
         cur.execute(
-            "SELECT id, nombre, ambiente, portal_activo FROM tenants WHERE id = %s AND activo = TRUE",
+            "SELECT id, nombre, ambiente, portal_activo, logo_url FROM tenants WHERE id = %s AND activo = TRUE",
             (tenant_id,)
         )
         t = cur.fetchone()
@@ -272,7 +293,8 @@ def tenant_auto_login():
     session['ui_tenant_id']       = str(t['id'])
     session['ui_tenant_nombre']   = t['nombre']
     session['ui_tenant_ambiente'] = t['ambiente']
-    return redirect(url_for('ui.facturas'))
+    session['ui_tenant_logo']     = t.get('logo_url')
+    return redirect(url_for('ui.tenant_home'))
 
 
 # ── Admin login / logout ───────────────────────────────────────────────────────
@@ -304,7 +326,7 @@ def logout():
 @ui_bp.route('/tenant-login', methods=['GET', 'POST'])
 def tenant_login():
     if session.get('ui_role') == 'tenant':
-        return redirect(url_for('ui.facturas'))
+        return redirect(url_for('ui.tenant_home'))
     if session.get('ui_role') == 'admin':
         return redirect(url_for('ui.dashboard'))
 
@@ -319,7 +341,7 @@ def tenant_login():
         with get_db_cursor(dict_cursor=True) as cur:
             cur.execute("""
                 SELECT id, nombre, ambiente, portal_password_hash, portal_activo,
-                       portal_intentos_fallidos, portal_bloqueado_hasta
+                       portal_intentos_fallidos, portal_bloqueado_hasta, logo_url
                 FROM tenants
                 WHERE LOWER(portal_usuario) = %s
             """, (usuario,))
@@ -379,7 +401,8 @@ def tenant_login():
         session['ui_tenant_id']       = str(t['id'])
         session['ui_tenant_nombre']   = t['nombre']
         session['ui_tenant_ambiente'] = t['ambiente']
-        return redirect(url_for('ui.facturas'))
+        session['ui_tenant_logo']     = t.get('logo_url')
+        return redirect(url_for('ui.tenant_home'))
 
     return render_template('ui/tenant_portal_login.html')
 
@@ -389,6 +412,63 @@ def tenant_logout():
     session.clear()
     flash('Sesión cerrada correctamente.', 'info')
     return redirect(url_for('ui.tenant_login'))
+
+
+# ── Inicio del cliente (dashboard del tenant) ───────────────────────────────
+
+@ui_bp.route('/inicio')
+@_login_tenant
+def tenant_home():
+    """Inicio amigable para el dueño: resumen del mes, estado 'listo para
+    facturar' y últimos documentos. Reemplaza el aterrizaje en la tabla cruda."""
+    tid = session.get('ui_tenant_id')
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("""
+            SELECT nombre, ambiente, logo_url, cert_path, resolucion_dian,
+                   clave_tecnica, software_id, prefijo, consecutivo_actual
+            FROM tenants WHERE id = %s
+        """, (tid,))
+        t = dict(cur.fetchone() or {})
+
+        cur.execute("""
+            SELECT estado, COUNT(*) AS n FROM facturas
+            WHERE tenant_id = %s AND creado_en >= date_trunc('month', now())
+            GROUP BY estado
+        """, (tid,))
+        by_estado = {r['estado']: r['n'] for r in cur.fetchall()}
+
+        cur.execute("SELECT COUNT(*) AS n FROM facturas WHERE tenant_id = %s", (tid,))
+        total_hist = cur.fetchone()['n']
+
+        cur.execute("""
+            SELECT id, numero_factura, referencia_pedido, estado, creado_en
+            FROM facturas WHERE tenant_id = %s ORDER BY creado_en DESC LIMIT 5
+        """, (tid,))
+        recientes = []
+        for r in cur.fetchall():
+            r = dict(r)
+            r['id'] = str(r['id'])
+            r['creado_en_fmt'] = r['creado_en'].strftime('%d/%m/%Y %H:%M') if r['creado_en'] else ''
+            recientes.append(r)
+
+    mes = {
+        'total':      sum(by_estado.values()),
+        'aceptadas':  by_estado.get('ACEPTADA', 0),
+        'espera':     by_estado.get('PENDIENTE', 0) + by_estado.get('PROCESANDO', 0),
+        'rechazadas': by_estado.get('RECHAZADA', 0) + by_estado.get('ERROR', 0),
+    }
+    checklist = [
+        {'ok': bool(t.get('cert_path')),       'label': 'Certificado de firma cargado'},
+        {'ok': bool(t.get('resolucion_dian')), 'label': 'Resolución de la DIAN configurada'},
+        {'ok': bool(t.get('clave_tecnica')),   'label': 'Clave técnica registrada'},
+        {'ok': bool(t.get('software_id')),     'label': 'Software ID asignado'},
+        {'ok': bool(t.get('prefijo') and t.get('consecutivo_actual') is not None),
+         'label': 'Numeración lista (prefijo y consecutivo)'},
+    ]
+    return render_template('ui/tenant_home.html',
+        t=t, mes=mes, recientes=recientes, total_hist=total_hist,
+        checklist=checklist, listo=all(c['ok'] for c in checklist),
+        ambiente=t.get('ambiente'))
 
 
 # ── Dashboard (admin only) ─────────────────────────────────────────────────────

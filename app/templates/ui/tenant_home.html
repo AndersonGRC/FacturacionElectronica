@@ -1,0 +1,134 @@
+{% extends "ui/base.html" %}
+{% block title %}Inicio{% endblock %}
+{% block breadcrumb %}Inicio{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <h4 class="fw-bold mb-1">Hola, {{ t.nombre }} 👋</h4>
+  <p class="text-muted mb-0">Este es tu portal de facturación electrónica.</p>
+</div>
+
+<div class="row g-3">
+  <!-- Columna principal -->
+  <div class="col-lg-8">
+    <!-- CTA emitir -->
+    <a class="cta-emitir mb-3" href="{{ url_for('ui.emitir') }}">
+      <div class="cta-ico"><i class="bi bi-file-earmark-plus"></i></div>
+      <div class="flex-grow-1">
+        <div class="cta-title">Emitir factura</div>
+        <div class="cta-sub">Crea una factura, nota crédito o nota débito</div>
+      </div>
+      <i class="bi bi-arrow-right-circle-fill fs-3"></i>
+    </a>
+
+    <!-- KPIs del mes -->
+    <div class="row g-3 mb-3">
+      <div class="col-6 col-md-3">
+        <div class="card stat-card azul h-100"><div class="card-body">
+          <div class="stat-num">{{ mes.total }}</div><div class="stat-lbl">Este mes</div>
+        </div></div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card stat-card verde h-100"><div class="card-body">
+          <div class="stat-num">{{ mes.aceptadas }}</div><div class="stat-lbl">Aceptadas</div>
+        </div></div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card stat-card naranja h-100"><div class="card-body">
+          <div class="stat-num">{{ mes.espera }}</div><div class="stat-lbl">En espera</div>
+        </div></div>
+      </div>
+      <div class="col-6 col-md-3">
+        <div class="card stat-card rojo h-100"><div class="card-body">
+          <div class="stat-num">{{ mes.rechazadas }}</div><div class="stat-lbl">Rechazadas</div>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- Últimos documentos -->
+    <div class="card">
+      <div class="card-header d-flex align-items-center justify-content-between">
+        <span><i class="bi bi-clock-history me-2"></i>Últimos documentos</span>
+        <a href="{{ url_for('ui.facturas') }}" class="small">Ver todos</a>
+      </div>
+      <div class="card-body p-0">
+        {% if recientes %}
+        <div class="table-responsive">
+          <table class="table mb-0">
+            <thead><tr><th class="ps-3">Número</th><th>Referencia</th><th>Estado</th><th>Fecha</th><th></th></tr></thead>
+            <tbody>
+              {% for f in recientes %}
+              {% set ei = estado_info(f.estado) %}
+              <tr>
+                <td class="ps-3 fw-semibold">{{ f.numero_factura or '—' }}</td>
+                <td class="text-muted">{{ f.referencia_pedido or '—' }}</td>
+                <td><span class="badge-estado badge-{{ ei.cls }}">{{ ei.label }}</span></td>
+                <td class="text-muted small">{{ f.creado_en_fmt }}</td>
+                <td class="text-end pe-3"><a href="{{ url_for('ui.factura_detalle', factura_id=f.id) }}" class="btn btn-sm btn-outline-primary"><i class="bi bi-eye"></i></a></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+          <div class="es-ico"><i class="bi bi-receipt"></i></div>
+          <h4>Aún no has emitido facturas</h4>
+          <p>Cuando emitas tu primera factura, aparecerá aquí.</p>
+          <a href="{{ url_for('ui.emitir') }}" class="btn btn-primary"><i class="bi bi-file-earmark-plus me-1"></i>Emitir la primera</a>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Columna lateral -->
+  <div class="col-lg-4">
+    <!-- Ambiente -->
+    {% if ambiente == 'produccion' %}
+    <div class="env-banner produccion mb-3">
+      <i class="bi bi-broadcast me-1"></i> <strong>Producción</strong><br>
+      <small>Tus facturas tienen validez legal ante la DIAN.</small>
+    </div>
+    {% else %}
+    <div class="env-banner pruebas mb-3">
+      <i class="bi bi-tools me-1"></i> <strong>Modo pruebas</strong><br>
+      <small>Estás probando. Las facturas todavía NO tienen validez legal.</small>
+      <form method="POST" action="{{ url_for('ui.solicitar_produccion') }}" class="mt-2"
+            onsubmit="return confirm('¿Solicitar al administrador activar tu facturación en PRODUCCIÓN (facturas reales con validez legal)?')">
+        <button class="btn btn-sm btn-primary w-100"><i class="bi bi-rocket-takeoff me-1"></i>Solicitar producción</button>
+      </form>
+    </div>
+    {% endif %}
+
+    <!-- Checklist listo para facturar -->
+    <div class="card mb-3">
+      <div class="card-header">
+        {% if listo %}<i class="bi bi-check-circle-fill text-success me-2"></i>Listo para facturar
+        {% else %}<i class="bi bi-exclamation-circle-fill text-warning me-2"></i>Configuración pendiente{% endif %}
+      </div>
+      <div class="card-body">
+        <ul class="checklist">
+          {% for c in checklist %}
+          <li>
+            {% if c.ok %}<i class="bi bi-check-circle-fill chk-ok"></i>{% else %}<i class="bi bi-x-circle-fill chk-no"></i>{% endif %}
+            <span>{{ c.label }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% if not listo %}
+        <p class="field-help mt-2 mb-0">Faltan datos por configurar. Tu administrador de CyberShop los completa desde el panel.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Total histórico -->
+    <div class="card">
+      <div class="card-body text-center">
+        <div class="stat-num text-primary">{{ total_hist }}</div>
+        <div class="stat-lbl">Documentos en total</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

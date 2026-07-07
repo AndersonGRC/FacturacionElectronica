@@ -13,7 +13,7 @@
     <div class="card mb-3">
       <div class="card-header bg-white d-flex align-items-center">
         <span class="fw-semibold">Datos de la Factura</span>
-        <span class="ms-auto badge badge-{{ factura.estado }} fs-6">{{ factura.estado }}</span>
+        <span class="ms-auto badge-estado badge-{{ estado_info(factura.estado).cls }}" style="font-size:.85rem" title="{{ estado_info(factura.estado).hint }}">{{ estado_info(factura.estado).label }}</span>
       </div>
       <div class="card-body">
         <div class="row g-3">
