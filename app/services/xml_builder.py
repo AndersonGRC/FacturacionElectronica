@@ -13,8 +13,13 @@ no-responsable de IVA, persona natural y jurídica.
 
 import hashlib
 from lxml import etree
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+
+# Zona horaria fiscal de Colombia (UTC-5). El servidor corre en UTC, así que el
+# fallback de fecha/hora debe ser aware para no quedar +5h. El flujo real ya pasa
+# fecha/hora desde tasks/facturacion.py; esto es defensa por si se construye sin ellas.
+TZ_CO = timezone(timedelta(hours=-5))
 
 # ── Namespaces UBL 2.1 ────────────────────────────────────────────────────────
 NS_CAC  = 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2'
@@ -94,7 +99,7 @@ class XMLBuilder:
         self.datos  = datos
         self.numero = numero_factura
         self.cufe   = cufe
-        _now = datetime.now()
+        _now = datetime.now(TZ_CO)
         self.fecha = fecha or _now.strftime('%Y-%m-%d')
         self.hora  = hora  or (_now.strftime('%H:%M:%S') + '-05:00')
         self.tipo  = datos.get('tipo_documento', 'factura')
