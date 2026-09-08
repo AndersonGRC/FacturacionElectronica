@@ -117,8 +117,16 @@ def cancelar_factura(factura_id):
     """
     POST /api/v1/facturas/{id}/cancelar
 
-    Cancela una factura PENDIENTE que aún no ha sido enviada a la DIAN.
-    Solo se puede cancelar si el estado es PENDIENTE y procesar_en > NOW().
+    Cancela (reversa) una factura que AÚN NO fue enviada a la DIAN.
+
+    Se puede cancelar mientras esté PENDIENTE y:
+      - siga dentro de la ventana de gracia (procesar_en > NOW()), o
+      - esté esperando aprobación manual (requiere_aprobacion = TRUE), en cuyo
+        caso NUNCA se envía sola, así que siempre debe poder reversarse.
+
+    Antes solo se miraba `procesar_en > NOW()`: en modo manual `procesar_en` es
+    ahora+60s, por lo que pasado un minuto la factura quedaba imposible de
+    cancelar por API aunque jamás se hubiera enviado.
     """
     tenant = request.tenant
     with get_db_cursor(dict_cursor=True) as cur:
@@ -127,7 +135,7 @@ def cancelar_factura(factura_id):
                SET estado = 'CANCELADA'
                WHERE id = %s AND tenant_id = %s
                  AND estado = 'PENDIENTE'
-                 AND procesar_en > NOW()
+                 AND (procesar_en > NOW() OR COALESCE(requiere_aprobacion, FALSE) IS TRUE)
                RETURNING id""",
             (factura_id, tenant['id'])
         )
@@ -152,8 +160,40 @@ def buscar_factura():
     tenant     = request.tenant
     referencia = request.args.get('referencia', '').strip()
 
+    # Sin 'referencia' → LISTADO (bandeja del panel). Retrocompatible: con
+    # 'referencia' mantiene la búsqueda puntual de siempre.
     if not referencia:
-        return jsonify({"error": "Parámetro 'referencia' requerido"}), 400
+        estado = (request.args.get('estado') or '').strip().upper()
+        try:
+            limite = max(1, min(int(request.args.get('limite', 50)), 200))
+        except (TypeError, ValueError):
+            limite = 50
+        sql = """SELECT id, estado, numero_factura, cufe, referencia_pedido,
+                        error_mensaje, intentos, requiere_aprobacion,
+                        procesar_en, creado_en, actualizado_en,
+                        (estado = 'PENDIENTE'
+                         AND (procesar_en > NOW()
+                              OR COALESCE(requiere_aprobacion, FALSE) IS TRUE)) AS cancelable
+                   FROM facturas
+                  WHERE tenant_id = %s"""
+        params = [tenant['id']]
+        if estado:
+            sql += " AND estado = %s"
+            params.append(estado)
+        sql += " ORDER BY creado_en DESC LIMIT %s"
+        params.append(limite)
+        with get_db_cursor(dict_cursor=True) as cur:
+            cur.execute(sql, tuple(params))
+            filas = cur.fetchall()
+        items = []
+        for f in filas:
+            r = dict(f)
+            r['id'] = str(r['id'])
+            for campo in ('procesar_en', 'creado_en', 'actualizado_en'):
+                r[campo] = r[campo].isoformat() if r.get(campo) else None
+            r['cancelable'] = bool(r.get('cancelable'))   # lo resuelve el SQL
+            items.append(r)
+        return jsonify({"items": items, "total": len(items)})
 
     with get_db_cursor(dict_cursor=True) as cur:
         cur.execute(
