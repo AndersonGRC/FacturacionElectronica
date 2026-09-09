@@ -52,6 +52,14 @@ def make_celery(app_name: str = 'facturacion_dian') -> Celery:
                 'task':     'tasks.facturacion.verificar_facturas_programadas',
                 'schedule': 300.0,   # cada 5 minutos
             },
+            # Rescata las que se quedaron en PROCESANDO (worker caído o espera
+            # agotada del set de pruebas). Solo reencola las que provablemente
+            # nunca salieron; el resto las deja marcadas para revisión manual.
+            # La reconsulta a la DIAN va aparte, tras FE_RECONCILIAR_ENABLED.
+            'reconciliar-facturas-procesando': {
+                'task':     'tasks.facturacion.reconciliar_facturas_procesando',
+                'schedule': 900.0,   # cada 15 minutos
+            },
         },
     )
 

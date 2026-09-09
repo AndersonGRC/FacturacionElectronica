@@ -84,11 +84,20 @@ def obtener_tenant(tenant_id):
     """Retorna configuración del tenant (sin datos sensibles)."""
     with get_db_cursor(dict_cursor=True) as cur:
         cur.execute(
+            # Los *_ok son booleanos calculados: dicen si el dato está cargado
+            # sin exponer el secreto. Sin ellos el panel no podía validar la
+            # cadena real (certificado, PIN, set de pruebas) y solo comprobaba
+            # conectividad.
             """SELECT id, nombre, nit, digito_verificacion, razon_social,
                       ambiente, cert_path, clave_tecnica,
                       resolucion_dian, resolucion_desde, resolucion_hasta,
                       resolucion_vigencia, prefijo, consecutivo_actual,
-                      activo, creado_en, actualizado_en
+                      activo, creado_en, actualizado_en,
+                      software_id, test_set_id,
+                      (cert_password_enc IS NOT NULL
+                       AND cert_password_enc <> '')      AS cert_password_ok,
+                      (software_pin IS NOT NULL
+                       AND software_pin <> '')           AS software_pin_ok
                FROM tenants WHERE id = %s""",
             (tenant_id,)
         )

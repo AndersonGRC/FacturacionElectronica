@@ -71,7 +71,7 @@ def procesar_factura(self, factura_id: str):
                        intentos = intentos + 1
                    WHERE id = %s
                      AND estado IN ('PENDIENTE', 'ERROR')
-                   RETURNING tenant_id, datos_json, intentos""",
+                   RETURNING tenant_id, datos_json, intentos, numero_factura""",
                 (factura_id,)
             )
             row = cur.fetchone()
@@ -107,14 +107,32 @@ def procesar_factura(self, factura_id: str):
 
         cert_password = descifrar(tenant['cert_password_enc'])
 
-        # ── Paso 3: Consecutivo atómico ────────────────────────────────────────
-        with get_db_cursor() as cur:
-            cur.execute("SELECT siguiente_consecutivo(%s)", (tenant_id,))
-            consecutivo = cur.fetchone()[0]
+        # ── Paso 3: Consecutivo atómico (una sola vez por factura) ─────────────
+        # Un reintento NO puede tomar otro consecutivo: dejaría un hueco en el
+        # rango autorizado por la DIAN y, si el envío anterior sí llegó, crearía
+        # un DUPLICADO con distinto número. Se persiste apenas se obtiene, así
+        # que cualquier intento posterior reutiliza el mismo. Si la DIAN ya lo
+        # recibió, rechazará el número repetido — que es el resultado seguro:
+        # el problema se hace visible en vez de facturar dos veces.
+        numero_factura = (row.get('numero_factura') or '').strip()
+        if not numero_factura:
+            with get_db_cursor() as cur:
+                cur.execute("SELECT siguiente_consecutivo(%s)", (tenant_id,))
+                consecutivo = cur.fetchone()[0]
+            prefijo        = tenant.get('prefijo') or ''
+            numero_factura = f"{prefijo}{consecutivo}"
+            with get_db_cursor() as cur:
+                cur.execute(
+                    """UPDATE facturas SET numero_factura = %s
+                       WHERE id = %s AND numero_factura IS NULL""",
+                    (numero_factura, factura_id)
+                )
+            _registrar_evento(factura_id, 'NUMERADA',
+                              f"Consecutivo asignado: {numero_factura}")
+        else:
+            logger.info(f"Factura {factura_id} reutiliza consecutivo {numero_factura}")
 
-        # ── Paso 4: Número de factura y CUFE ───────────────────────────────────
-        prefijo        = tenant.get('prefijo') or ''
-        numero_factura = f"{prefijo}{consecutivo}"
+        # ── Paso 4: Fecha de emisión y CUFE ────────────────────────────────────
         now            = datetime.now(TZ_CO)
         fecha_emision  = now.strftime('%Y-%m-%d')
         hora_emision   = now.strftime('%H:%M:%S-05:00')
@@ -347,7 +365,7 @@ def verificar_facturas_programadas():
             SELECT id FROM facturas
             WHERE estado    = 'PENDIENTE'
               AND procesar_en <= NOW()
-              AND intentos   = 0
+              AND intentos   < 3
               AND requiere_aprobacion = FALSE
         """)
         listas = cur.fetchall()
@@ -371,3 +389,125 @@ def verificar_facturas_programadas():
 
     logger.info(f"verificar_facturas_programadas: {len(listas)} factura(s) encolada(s)")
     return {'encoladas': len(listas)}
+
+
+# Minutos que debe llevar una factura en PROCESANDO para considerarla trabada.
+RECONCILIAR_UMBRAL_MIN = int(os.getenv('FE_RECONCILIAR_UMBRAL_MIN', '30'))
+# Apagado por defecto: consultar el estado en la DIAN es tráfico saliente y se
+# habilita solo con autorización explícita del dueño.
+RECONCILIAR_ENABLED = os.getenv('FE_RECONCILIAR_ENABLED', 'false').lower() == 'true'
+
+
+@celery_app.task(name='tasks.facturacion.reconciliar_facturas_procesando')
+def reconciliar_facturas_procesando():
+    """Rescata facturas atascadas en PROCESANDO.
+
+    Antes no existía: `verificar_facturas_programadas` solo mira PENDIENTE, así
+    que si el worker moría —o si el set de pruebas agotaba su espera de 60 s—
+    el documento quedaba en PROCESANDO para siempre, sin reintento ni consulta.
+
+    La regla que evita duplicar es distinguir tres casos:
+      · sin numero_factura  → nunca se numeró ni se envió  → vuelve a PENDIENTE.
+      · con zip_key         → sí salió; se RECONSULTA su estado (nunca se
+                              reenvía) y se cierra con el veredicto de la DIAN.
+      · con numero pero sin zip_key → ambiguo: pudo haber salido. NO se toca;
+                              se marca para revisión manual, porque reenviar
+                              aquí es exactamente lo que genera un duplicado.
+    """
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("""
+            SELECT id, tenant_id, numero_factura, zip_key
+            FROM facturas
+            WHERE estado = 'PROCESANDO'
+              AND actualizado_en < NOW() - (%s * INTERVAL '1 minute')
+            ORDER BY actualizado_en
+            LIMIT 50
+        """, (RECONCILIAR_UMBRAL_MIN,))
+        trabadas = cur.fetchall()
+
+    reencoladas = consultadas = revision = 0
+
+    for row in trabadas:
+        factura_id = str(row['id'])
+        numero     = (row['numero_factura'] or '').strip()
+        zip_key    = (row['zip_key'] or '').strip()
+
+        if not numero:
+            # Nunca se numeró → no pudo haber llegado a la DIAN. Seguro.
+            with get_db_cursor() as cur:
+                cur.execute(
+                    """UPDATE facturas
+                       SET estado = 'PENDIENTE', actualizado_en = NOW()
+                       WHERE id = %s AND estado = 'PROCESANDO'""",
+                    (factura_id,)
+                )
+            _registrar_evento(factura_id, 'PENDIENTE',
+                              'Rescatada: estaba en PROCESANDO sin numerar')
+            reencoladas += 1
+            continue
+
+        if zip_key and RECONCILIAR_ENABLED:
+            consultadas += _reconsultar_zip(factura_id, str(row['tenant_id']), zip_key)
+            continue
+
+        _registrar_evento(
+            factura_id, 'REVISION',
+            f"Trabada en PROCESANDO con número {numero} y "
+            f"{'zip_key ' + zip_key if zip_key else 'sin zip_key'}. "
+            "Requiere revisión manual: reenviar podría duplicar."
+        )
+        revision += 1
+
+    if trabadas:
+        logger.info(
+            "reconciliar_facturas_procesando: %d trabada(s) — %d reencolada(s), "
+            "%d consultada(s), %d para revisión",
+            len(trabadas), reencoladas, consultadas, revision
+        )
+    return {'trabadas': len(trabadas), 'reencoladas': reencoladas,
+            'consultadas': consultadas, 'revision': revision}
+
+
+def _reconsultar_zip(factura_id: str, tenant_id: str, zip_key: str) -> int:
+    """Pregunta a la DIAN por el veredicto de un envío ya realizado.
+
+    Es una consulta de estado (GetStatusZip), nunca un reenvío: no puede crear
+    un documento nuevo. Aun así queda tras `FE_RECONCILIAR_ENABLED`.
+    """
+    try:
+        with get_db_cursor(dict_cursor=True) as cur:
+            cur.execute("SELECT * FROM tenants WHERE id = %s", (tenant_id,))
+            tenant = cur.fetchone()
+        if not tenant:
+            return 0
+        tenant = dict(tenant)
+
+        dian = DIANClient(
+            ambiente      = tenant.get('ambiente', 'habilitacion'),
+            nit_emisor    = tenant.get('nit', ''),
+            clave_tecnica = tenant.get('clave_tecnica') or CLAVE_TECNICA_HABILITACION,
+            software_id   = tenant.get('software_id'),
+            timeout       = int(os.getenv('DIAN_TIMEOUT', '30')),
+            cert_path     = tenant.get('cert_path'),
+            cert_password = descifrar(tenant['cert_password_enc']) if tenant.get('cert_password_enc') else None,
+        )
+        r = dian.obtener_estado_documento(zip_key)
+
+        if not (r.get('is_valid') or (r.get('status_code') or '').strip()):
+            return 0   # sigue en trámite; se reintenta en el próximo barrido
+
+        estado_final = 'ACEPTADA' if r.get('is_valid') else 'RECHAZADA'
+        mensaje = '; '.join(r.get('errors') or [])[:500] or None
+        with get_db_cursor() as cur:
+            cur.execute(
+                """UPDATE facturas
+                   SET estado = %s, error_mensaje = %s, actualizado_en = NOW()
+                   WHERE id = %s AND estado = 'PROCESANDO'""",
+                (estado_final, mensaje, factura_id)
+            )
+        _registrar_evento(factura_id, estado_final,
+                          f"Reconsulta por ZipKey={zip_key}: {mensaje or 'sin observaciones'}")
+        return 1
+    except Exception as exc:
+        logger.warning(f"No se pudo reconsultar {factura_id} (zip {zip_key}): {exc}")
+        return 0
