@@ -138,13 +138,27 @@ def emitir_documento(tenant_id, datos: dict, *, delay_seconds: int = None,
     }
 
 
-def enviar_ahora(factura_id: str):
-    """Adelanta el envío de un PENDIENTE: procesar_en = NOW() y encola la tarea."""
+def enviar_ahora(factura_id: str, aprobado_por: str = None):
+    """Aprueba un PENDIENTE y lo envía: procesar_en = NOW() y encola la tarea.
+
+    Este es el acto que manda el documento a la DIAN, así que queda asentado en
+    la bitácora con su autor: antes solo bajaba la bandera y encolaba, sin
+    dejar rastro de quién aprobó. Tras aprobar ya no se puede anular
+    (`requiere_aprobacion` en FALSE y `procesar_en` en el pasado hacen fallar la
+    condición de anulación), de modo que la aprobación es el punto de no
+    retorno y por eso importa saber quién la dio.
+    """
     with get_db_cursor() as cur:
         cur.execute("""UPDATE facturas SET procesar_en = NOW(), requiere_aprobacion = FALSE
                        WHERE id = %s AND estado = 'PENDIENTE' RETURNING id""", (factura_id,))
         ok = cur.fetchone()
     if ok:
+        with get_db_cursor() as cur:
+            cur.execute(
+                "INSERT INTO factura_eventos (factura_id, evento, detalle) VALUES (%s,%s,%s)",
+                (factura_id, 'APROBADA',
+                 f"Aprobada para envío por {aprobado_por or 'origen no identificado'}")
+            )
         task = procesar_factura.delay(factura_id)
         with get_db_cursor() as cur:
             cur.execute("UPDATE facturas SET celery_task_id=%s WHERE id=%s", (task.id, factura_id))

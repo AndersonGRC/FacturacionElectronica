@@ -62,14 +62,20 @@
               {% if factura.estado == 'PENDIENTE' %}
               <div class="ms-auto d-flex gap-2">
                 <form method="POST" action="{{ url_for('ui.factura_enviar_ya', factura_id=factura.id) }}"
-                      onsubmit="return confirm('¿Enviar AHORA a la DIAN? Esta acción es irreversible.')">
+                      onsubmit="return confirm('¿Aprobar y enviar AHORA a la DIAN? Esta acción es irreversible: después no se puede anular.')">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                   <button class="btn btn-sm btn-warning">
-                    <i class="bi bi-send me-1"></i>Enviar ahora
+                    <i class="bi bi-send me-1"></i>Aprobar y enviar
                   </button>
                 </form>
                 <form method="POST" action="{{ url_for('ui.factura_anular', factura_id=factura.id) }}"
-                      onsubmit="return confirm('¿Anular este documento? No se enviará a la DIAN.')">
-                  <button class="btn btn-sm btn-outline-danger">
+                      onsubmit="return confirm('¿Anular este documento? No se enviará a la DIAN.')"
+                      class="d-flex gap-1">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="text" name="motivo" class="form-control form-control-sm"
+                         style="max-width:15rem" maxlength="200"
+                         placeholder="Motivo (queda en la bitácora)">
+                  <button class="btn btn-sm btn-outline-danger text-nowrap">
                     <i class="bi bi-x-circle me-1"></i>Anular
                   </button>
                 </form>

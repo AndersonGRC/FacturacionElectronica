@@ -112,6 +112,18 @@ def _tenant_id_scope():
     return None
 
 
+def _actor() -> str:
+    """Identidad para la auditoría: quién ejecutó la acción.
+
+    Aprobar un documento es el acto que lo manda a la DIAN y anularlo es el que
+    lo impide; ambos quedaban registrados sin autor, así que no había forma de
+    saber quién decidió.
+    """
+    if session.get('ui_role') == 'tenant':
+        return f"tenant:{session.get('ui_tenant_id') or '?'}"
+    return 'admin' if session.get('ui_role') == 'admin' else 'desconocido'
+
+
 def _login_tenant(f):
     """Solo tenants autenticados (emisión autoservicio del cliente)."""
     @wraps(f)
@@ -1030,9 +1042,19 @@ def _muestra_datos(tipo, i, ref=None):
 
 
 def _emitir_y_enviar(tenant_id, datos):
-    res = emitir_documento(tenant_id, datos, delay_seconds=0)
-    if not res['existente']:
-        enviar_ahora(res['id'])
+    """Emite un documento del set de pruebas respetando la política de envío.
+
+    Antes este camino la ignoraba: pasaba delay_seconds=0 y llamaba a
+    enviar_ahora() de inmediato, así que configurar 'manual — no enviar nada
+    hasta que yo apruebe' no protegía el módulo de pruebas. En modo manual el
+    documento queda PENDIENTE esperando aprobación y NO sale a la DIAN.
+    """
+    modo, _ = _tenant_envio(tenant_id)
+    manual  = (modo == 'manual')
+    res = emitir_documento(tenant_id, datos, delay_seconds=0,
+                           requiere_aprobacion=manual)
+    if not res['existente'] and not manual:
+        enviar_ahora(res['id'], aprobado_por=_actor())
     return res
 
 
@@ -1251,6 +1273,7 @@ def factura_detalle(factura_id):
 
     return render_template('ui/factura_detalle.html',
                            factura=factura, eventos=eventos,
+                           csrf_token=_csrf_token(),
                            es_tenant=(tenant_scope is not None))
 
 
@@ -1258,6 +1281,9 @@ def factura_detalle(factura_id):
 @_login_tenant_o_admin
 def factura_anular(factura_id):
     """Anula un PENDIENTE dentro del plazo de gracia (tenant sobre los suyos)."""
+    if not _csrf_ok(request.form):
+        flash('Solicitud inválida (token expirado). Recarga la página.', 'danger')
+        return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
     scope = _tenant_id_scope()
     with get_db_cursor() as cur:
         if scope:
@@ -1272,9 +1298,14 @@ def factura_anular(factura_id):
                         (factura_id,))
         ok = cur.fetchone()
     if ok:
+        # El motivo es opcional en el formulario pero se registra: una anulación
+        # sin razón deja la auditoría sin explicar por qué no se facturó.
+        motivo = (request.form.get('motivo') or '').strip()
+        detalle = (f"Anulada por {_actor()}. Motivo: {motivo}" if motivo
+                   else f"Anulada por {_actor()} (sin motivo indicado)")
         with get_db_cursor() as cur:
             cur.execute("INSERT INTO factura_eventos (factura_id, evento, detalle) "
-                        "VALUES (%s,%s,%s)", (factura_id, 'CANCELADA', 'Anulada desde el portal'))
+                        "VALUES (%s,%s,%s)", (factura_id, 'CANCELADA', detalle[:500]))
         flash('Documento anulado. No será enviado a la DIAN.', 'success')
     else:
         flash('No se puede anular: ya fue enviado o el plazo venció.', 'danger')
@@ -1284,7 +1315,14 @@ def factura_anular(factura_id):
 @ui_bp.route('/facturas/<factura_id>/enviar-ya', methods=['POST'])
 @_login_tenant_o_admin
 def factura_enviar_ya(factura_id):
-    """Adelanta el envío (sin esperar el plazo)."""
+    """Aprueba y adelanta el envío (sin esperar el plazo).
+
+    Mandar a la DIAN es irreversible, así que la acción exige token: sin él un
+    sitio externo podría disparar la emisión con la sesión del usuario.
+    """
+    if not _csrf_ok(request.form):
+        flash('Solicitud inválida (token expirado). Recarga la página.', 'danger')
+        return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
     scope = _tenant_id_scope()
     with get_db_cursor(dict_cursor=True) as cur:
         cur.execute("SELECT tenant_id, estado FROM facturas WHERE id=%s", (factura_id,))
@@ -1292,8 +1330,8 @@ def factura_enviar_ya(factura_id):
     if not f or (scope and str(f['tenant_id']) != scope):
         flash('No autorizado.', 'danger')
         return redirect(url_for('ui.facturas'))
-    if enviar_ahora(factura_id):
-        flash('Enviando a la DIAN ahora…', 'success')
+    if enviar_ahora(factura_id, aprobado_por=_actor()):
+        flash('Aprobado. Enviando a la DIAN ahora…', 'success')
     else:
         flash('No se puede enviar: el documento no está pendiente.', 'danger')
     return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
@@ -1324,25 +1362,16 @@ def factura_cancelar(factura_id):
 @ui_bp.route('/facturas/<factura_id>/enviar-ahora', methods=['POST'])
 @_login_admin
 def factura_enviar_ahora(factura_id):
-    with get_db_cursor() as cur:
-        cur.execute("""
-            UPDATE facturas SET procesar_en = NOW()
-            WHERE id = %s AND estado = 'PENDIENTE'
-            RETURNING id
-        """, (factura_id,))
-        ok = cur.fetchone()
-    if not ok:
-        flash('No se puede reenviar: la factura no está en estado PENDIENTE.', 'danger')
+    if not _csrf_ok(request.form):
+        flash('Solicitud inválida (token expirado). Recarga la página.', 'danger')
+        return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
+    # Pasa por enviar_ahora() en vez de hacer su propio UPDATE: así esta vía
+    # también limpia `requiere_aprobacion` y deja asentado quién aprobó. Antes
+    # era una aprobación sin autor en la bitácora.
+    if enviar_ahora(factura_id, aprobado_por=_actor()):
+        flash('Factura aprobada y encolada para envío inmediato a la DIAN.', 'success')
     else:
-        task = procesar_factura.delay(factura_id)
-        with get_db_cursor() as cur:
-            cur.execute("UPDATE facturas SET celery_task_id=%s WHERE id=%s",
-                        (task.id, factura_id))
-            cur.execute(
-                "INSERT INTO factura_eventos (factura_id, evento, detalle) VALUES (%s,%s,%s)",
-                (factura_id, 'ENCOLADA', f'Envío inmediato solicitado desde UI. task_id={task.id}')
-            )
-        flash('Factura encolada para envío inmediato a la DIAN.', 'success')
+        flash('No se puede reenviar: la factura no está en estado PENDIENTE.', 'danger')
     return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
 
 
