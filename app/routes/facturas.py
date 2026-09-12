@@ -149,6 +149,57 @@ def cancelar_factura(factura_id):
     return jsonify({"id": factura_id, "estado": "CANCELADA", "mensaje": "Factura cancelada"}), 200
 
 
+@facturas_bp.route('/config-envio', methods=['GET', 'PUT'])
+@requiere_tenant
+def config_envio_api():
+    """
+    GET  /api/v1/config-envio  → política de envío del tenant
+    PUT  /api/v1/config-envio  → la cambia
+
+    Existía solo como pantalla del portal (sesión), así que la app del cliente
+    no podía leerla ni cambiarla: el "parametrizable desde el admin" quedaba
+    fuera de alcance. Campos:
+      modo_aprobacion: 'manual' (nada sale sin aprobación) | 'automatico'
+      grace_minutos:   minutos de espera antes del envío en modo automático,
+                       que es la ventana para reversar.
+    """
+    tenant = request.tenant
+
+    if request.method == 'GET':
+        with get_db_cursor(dict_cursor=True) as cur:
+            cur.execute("""SELECT COALESCE(modo_aprobacion, 'automatico') AS modo_aprobacion,
+                                  grace_minutos
+                           FROM tenants WHERE id = %s""", (tenant['id'],))
+            row = cur.fetchone() or {}
+        from config import Config
+        return jsonify({
+            'modo_aprobacion': row.get('modo_aprobacion') or 'automatico',
+            'grace_minutos':   int(row.get('grace_minutos') or Config.GRACE_MINUTES),
+        })
+
+    datos = request.get_json(silent=True) or {}
+    modo  = str(datos.get('modo_aprobacion') or '').strip().lower()
+    if modo not in ('manual', 'automatico'):
+        return jsonify({"error": "modo_aprobacion debe ser 'manual' o 'automatico'"}), 400
+
+    # El tope de una semana evita que un error de captura deje documentos
+    # esperando indefinidamente sin que nadie lo note.
+    try:
+        grace = int(datos.get('grace_minutos'))
+    except (TypeError, ValueError):
+        return jsonify({"error": "grace_minutos debe ser un entero de minutos"}), 400
+    if not 0 <= grace <= 10080:
+        return jsonify({"error": "grace_minutos debe estar entre 0 y 10080 (una semana)"}), 400
+
+    with get_db_cursor() as cur:
+        cur.execute("""UPDATE tenants
+                       SET modo_aprobacion = %s, grace_minutos = %s, actualizado_en = NOW()
+                       WHERE id = %s""", (modo, grace, tenant['id']))
+
+    return jsonify({'modo_aprobacion': modo, 'grace_minutos': grace,
+                    'mensaje': 'Política de envío actualizada'})
+
+
 @facturas_bp.route('/facturas', methods=['GET'])
 @requiere_tenant
 def buscar_factura():
