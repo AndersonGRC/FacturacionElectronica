@@ -32,7 +32,7 @@ if str(app_dir) not in sys.path:
 
 from tasks.celery_app import celery_app
 from database import get_db_cursor
-from services.xml_builder import XMLBuilder
+from services.xml_builder import XMLBuilder, desglosar_linea
 from services.signer import FirmadorDIAN
 from services.dian_client import DIANClient
 from services.storage import StorageManager
@@ -143,19 +143,17 @@ def procesar_factura(self, factura_id: str):
         def _d(v):
             return Decimal(str(v)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-        # Responsable de IVA (regimen 48) vs No responsable (49) — debe coincidir
-        # con xml_builder para que el CUFE calce con el XML.
+        # Responsable de IVA (regimen 48) vs No responsable (49). El desglose se
+        # delega a xml_builder.desglosar_linea: era una copia paralela de la
+        # misma fórmula y cualquier divergencia hace que el CUFE no calce con el
+        # XML (rechazo de la DIAN).
         responsable_iva = str(tenant.get('regimen_codigo') or '48') == '48'
         subtotal  = Decimal('0')
         total_iva = Decimal('0')
         for item in datos.get('items', []):
-            cant    = _d(item.get('cantidad', 1))
-            precio  = _d(item.get('precio_unitario', 0))
-            desc    = _d(item.get('descuento', 0))
-            iva_pct = _d(item.get('impuesto_iva', 19)) if responsable_iva else Decimal('0')
-            base    = (cant * precio) - desc
-            subtotal  += base
-            total_iva += base * iva_pct / Decimal('100')
+            ln = desglosar_linea(item, responsable_iva)
+            subtotal  += ln['base']
+            total_iva += ln['iva']
 
         total = subtotal + total_iva
 

@@ -61,6 +61,43 @@ def _d(val) -> Decimal:
     return Decimal(str(val)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
+def desglosar_linea(item: dict, responsable_iva: bool) -> dict:
+    """Desglosa una línea en base gravable, IVA y precio unitario.
+
+    Fuente única de verdad del cálculo: la usan el XML y el CUFE, que tienen
+    que coincidir exactamente o la DIAN rechaza el documento.
+
+    `precio_incluye_iva` lo envían los clientes que cobran precio final (el
+    catálogo de CyberShop no suma IVA al cobrar; el campo `impuesto` del
+    producto es metadato tributario). En ese caso el precio se DESCOMPONE en
+    base + IVA en lugar de sumarle el impuesto encima, para que el total
+    facturado sea exactamente lo que el comprador pagó.
+
+    Solo se descompone cuando el IVA realmente aplica: a un emisor no
+    responsable de IVA (régimen 49) se le fuerza iva_pct = 0, y dividir ahí
+    dejaría la factura por DEBAJO de lo cobrado.
+    """
+    cant    = _d(item.get('cantidad', 1))
+    iva_pct = _d(item.get('impuesto_iva', 19)) if responsable_iva else Decimal('0')
+    precio  = _d(item.get('precio_unitario', 0))
+    desc    = _d(item.get('descuento', 0))
+
+    if iva_pct and item.get('precio_incluye_iva'):
+        factor = Decimal(1) + iva_pct / Decimal(100)
+        precio = _d(precio / factor)
+        desc   = _d(desc / factor)
+
+    base = _d((cant * precio) - desc)
+    return {
+        'cantidad':  cant,
+        'precio':    precio,
+        'descuento': desc,
+        'iva_pct':   iva_pct,
+        'base':      base,
+        'iva':       _d(base * iva_pct / Decimal('100')),
+    }
+
+
 def _el(parent, ns, tag, text=None, **attrs):
     e = etree.SubElement(parent, f'{{{ns}}}{tag}', **attrs)
     if text is not None:
@@ -142,13 +179,10 @@ class XMLBuilder:
     def _calcular_totales(self):
         subtotal = Decimal('0'); total_iva = Decimal('0'); descuentos = Decimal('0')
         for item in self.datos.get('items', []):
-            cant = _d(item.get('cantidad', 1)); precio = _d(item.get('precio_unitario', 0))
-            desc = _d(item.get('descuento', 0))
-            iva_pct = _d(item.get('impuesto_iva', 19)) if self.responsable_iva else Decimal('0')
-            base = _d((cant * precio) - desc)
-            subtotal += base
-            total_iva += _d(base * iva_pct / Decimal('100'))
-            descuentos += desc
+            ln = desglosar_linea(item, self.responsable_iva)
+            subtotal   += ln['base']
+            total_iva  += ln['iva']
+            descuentos += ln['descuento']
         total = subtotal + total_iva
         return {'subtotal': _d(subtotal), 'total_iva': _d(total_iva),
                 'descuentos': _d(descuentos), 'total': _d(total)}
@@ -360,12 +394,13 @@ class XMLBuilder:
 
     def _add_lines(self, root):
         for idx, item in enumerate(self.datos.get('items', []), start=1):
-            cant = _d(item.get('cantidad', 1)); precio = _d(item.get('precio_unitario', 0))
-            desc = _d(item.get('descuento', 0))
-            iva_pct = _d(item.get('impuesto_iva', 19)) if self.responsable_iva else Decimal('0')
-            unidad = item.get('codigo_unidad', 'EA')
-            base = (cant * precio) - desc
-            iva_val = (base * iva_pct / Decimal('100'))
+            ln = desglosar_linea(item, self.responsable_iva)
+            cant    = ln['cantidad']
+            precio  = ln['precio']
+            iva_pct = ln['iva_pct']
+            base    = ln['base']
+            iva_val = ln['iva']
+            unidad  = item.get('codigo_unidad', 'EA')
 
             line = _cac(root, self.cfg['line'])
             _cbc(line, 'ID', str(idx))
