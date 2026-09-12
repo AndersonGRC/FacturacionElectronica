@@ -107,8 +107,12 @@ def obtener_tenant(tenant_id):
         return jsonify({"error": "Tenant no encontrado"}), 404
 
     row = dict(tenant)
-    row['creado_en']     = row['creado_en'].isoformat() if row['creado_en'] else None
-    row['actualizado_en'] = row['actualizado_en'].isoformat() if row['actualizado_en'] else None
+    # Las fechas de la resolución iban sin convertir, así que Flask las
+    # serializaba como RFC 1123 ('Sat, 19 Jan 2030 00:00:00 GMT') mientras el
+    # resto salía en ISO. Quien consumía el endpoint no podía leerlas.
+    for campo, valor in list(row.items()):
+        if hasattr(valor, 'isoformat'):
+            row[campo] = valor.isoformat()
     return jsonify(row)
 
 
