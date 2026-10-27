@@ -20,7 +20,8 @@ def get_tenant_by_api_key(api_key: str) -> dict | None:
                       clave_tecnica, token_dian, token_dian_expira,
                       resolucion_dian, resolucion_desde, resolucion_hasta,
                       resolucion_vigencia, prefijo, consecutivo_actual,
-                      modo_aprobacion, grace_minutos
+                      modo_aprobacion, grace_minutos,
+                      COALESCE(portal_activo, FALSE) AS portal_activo
                FROM tenants
                WHERE api_key_hash = %s AND activo = TRUE""",
             (key_hash,)

@@ -190,3 +190,7 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_bloqueado_hasta   TIMESTAMPT
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS pdf_path            VARCHAR(500);
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS zip_key             VARCHAR(100);
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS requiere_aprobacion BOOLEAN DEFAULT FALSE;
+-- Cola de envío: cuándo sale cada documento (espera para reversar). La usan la
+-- API, el portal y el beat; faltaba aquí, así que una instalación nueva fallaba.
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS procesar_en         TIMESTAMPTZ DEFAULT NOW();
+CREATE INDEX IF NOT EXISTS idx_facturas_cola ON facturas (estado, procesar_en);

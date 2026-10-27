@@ -16,6 +16,8 @@ from services.emision import emitir_documento, EmisionError
 
 facturas_bp = Blueprint('facturas', __name__, url_prefix='/api/v1')
 
+GRACE_MAXIMO = 21600   # 15 días en minutos: la espera más larga que se puede elegir
+
 
 @facturas_bp.route('/facturas', methods=['POST'])
 @requiere_tenant
@@ -50,7 +52,8 @@ def crear_factura():
     # cliente") — igual que el portal. Si es manual, no se envía hasta aprobar.
     from config import Config
     modo  = tenant.get('modo_aprobacion') or 'automatico'
-    grace = int(tenant.get('grace_minutos') or Config.GRACE_MINUTES)
+    grace = tenant.get('grace_minutos')
+    grace = Config.GRACE_MINUTES if grace is None else int(grace)
     try:
         if modo == 'manual':
             res = emitir_documento(tenant['id'], datos, delay_seconds=60,
@@ -172,9 +175,11 @@ def config_envio_api():
                            FROM tenants WHERE id = %s""", (tenant['id'],))
             row = cur.fetchone() or {}
         from config import Config
+        grace = row.get('grace_minutos')
         return jsonify({
             'modo_aprobacion': row.get('modo_aprobacion') or 'automatico',
-            'grace_minutos':   int(row.get('grace_minutos') or Config.GRACE_MINUTES),
+            'grace_minutos':   Config.GRACE_MINUTES if grace is None else int(grace),
+            'grace_maximo':    GRACE_MAXIMO,
         })
 
     datos = request.get_json(silent=True) or {}
@@ -182,14 +187,14 @@ def config_envio_api():
     if modo not in ('manual', 'automatico'):
         return jsonify({"error": "modo_aprobacion debe ser 'manual' o 'automatico'"}), 400
 
-    # El tope de una semana evita que un error de captura deje documentos
-    # esperando indefinidamente sin que nadie lo note.
+    # Tope de 15 días, el mismo que ofrece el portal (PRESETS_ENVIO): evita que un
+    # error de captura deje documentos esperando indefinidamente sin que nadie lo note.
     try:
         grace = int(datos.get('grace_minutos'))
     except (TypeError, ValueError):
         return jsonify({"error": "grace_minutos debe ser un entero de minutos"}), 400
-    if not 0 <= grace <= 10080:
-        return jsonify({"error": "grace_minutos debe estar entre 0 y 10080 (una semana)"}), 400
+    if not 0 <= grace <= GRACE_MAXIMO:
+        return jsonify({"error": f"grace_minutos debe estar entre 0 y {GRACE_MAXIMO} (15 días)"}), 400
 
     with get_db_cursor() as cur:
         cur.execute("""UPDATE tenants
@@ -322,6 +327,76 @@ def descargar_pdf(factura_id):
         return jsonify({"error": "PDF no disponible para esta factura"}), 404
     return send_file(f['pdf_path'], as_attachment=True,
                      download_name=f"{f['numero_factura']}.pdf", mimetype='application/pdf')
+
+
+@facturas_bp.route('/facturas/<factura_id>/enviar', methods=['POST'])
+@requiere_tenant
+def enviar_factura(factura_id):
+    """
+    POST /api/v1/facturas/{id}/enviar
+
+    Envía YA a la DIAN un documento que está en cola (PENDIENTE): el que espera
+    aprobación manual o el que aún no cumple su espera. Es el mismo acto que el
+    botón "Enviar ya" del portal, pero desde la app del cliente, que hasta ahora
+    solo podía reversar. Queda en la bitácora quién lo aprobó.
+    """
+    tenant = request.tenant
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT estado FROM facturas WHERE id = %s AND tenant_id = %s",
+                    (factura_id, tenant['id']))
+        fila = cur.fetchone()
+    if not fila:
+        return jsonify({"error": "Factura no encontrada"}), 404
+    if fila['estado'] != 'PENDIENTE':
+        return jsonify({"error": f"No se puede enviar: el documento está {fila['estado']}"}), 409
+
+    from services.emision import enviar_ahora
+    aprobado_por = (request.headers.get('X-Usuario') or '').strip()[:80] or 'app del cliente'
+    if not enviar_ahora(factura_id, aprobado_por=f"{aprobado_por} (API)"):
+        return jsonify({"error": "No se pudo enviar: el documento cambió de estado"}), 409
+    return jsonify({"id": factura_id, "estado": "PENDIENTE",
+                    "mensaje": "Enviando a la DIAN"}), 200
+
+
+@facturas_bp.route('/me', methods=['GET'])
+@requiere_tenant
+def quien_soy():
+    """
+    GET /api/v1/me
+
+    A nombre de quién factura esta API key, en qué ambiente y si está lista para
+    emitir. Sirve para que la app del cliente compruebe la conexión y muestre
+    "tus facturas salen a nombre de …" (sin secretos: ni certificado ni claves).
+    """
+    t = request.tenant
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("""SELECT (cert_path IS NOT NULL AND cert_path <> '') AS certificado,
+                              (clave_tecnica IS NOT NULL AND clave_tecnica <> '') AS clave_tecnica,
+                              (software_id IS NOT NULL AND software_id <> '') AS software
+                       FROM tenants WHERE id = %s""", (t['id'],))
+        listo = dict(cur.fetchone() or {})
+    from config import Config
+    grace = t.get('grace_minutos')
+    vigencia = t.get('resolucion_vigencia')
+    return jsonify({
+        'nombre': t.get('nombre'),
+        'razon_social': t.get('razon_social'),
+        'nit': t.get('nit'),
+        'dv': t.get('digito_verificacion'),
+        'ambiente': t.get('ambiente') or 'habilitacion',
+        'prefijo': t.get('prefijo'),
+        'resolucion': t.get('resolucion_dian'),
+        'rango_desde': t.get('resolucion_desde'),
+        'rango_hasta': t.get('resolucion_hasta'),
+        'vigencia_hasta': vigencia.isoformat() if hasattr(vigencia, 'isoformat') else vigencia,
+        'consecutivo_actual': t.get('consecutivo_actual'),
+        'modo_aprobacion': t.get('modo_aprobacion') or 'automatico',
+        'grace_minutos': Config.GRACE_MINUTES if grace is None else int(grace),
+        'grace_maximo': GRACE_MAXIMO,
+        'portal_activo': bool(t.get('portal_activo')),
+        'listo_para_emitir': bool(listo.get('certificado') and listo.get('clave_tecnica')
+                                  and listo.get('software') and t.get('resolucion_dian')),
+    })
 
 
 TIPOS_DOC_VALIDOS = {'CC','CE','NIT','TI','PA','RC'}
