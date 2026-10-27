@@ -184,15 +184,20 @@ def _parse_items(form):
     precs = form.getlist('item_precio')
     ivas  = form.getlist('item_iva')
     cods  = form.getlist('item_codigo')
+    dscs  = form.getlist('item_descuento')     # % de descuento de la línea
     items = []
     for i, d in enumerate(descs):
         if not (d or '').strip():
             continue
         def _g(lst, j, dv): return lst[j] if j < len(lst) and lst[j] != '' else dv
+        cant = float(_g(cants, i, 1) or 1)
+        precio = float(_g(precs, i, 0) or 0)
+        pct = min(100.0, max(0.0, float(_g(dscs, i, 0) or 0)))
         items.append({
             'descripcion': d.strip(),
-            'cantidad': float(_g(cants, i, 1) or 1),
-            'precio_unitario': float(_g(precs, i, 0) or 0),
+            'cantidad': cant,
+            'precio_unitario': precio,
+            'descuento': round(cant * precio * pct / 100, 2),
             'impuesto_iva': float(_g(ivas, i, 0) or 0),
             'codigo': (_g(cods, i, '') or '').strip(),
             'codigo_unidad': 'EA',

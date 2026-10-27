@@ -386,7 +386,10 @@ class XMLBuilder:
         _cbc(legal, 'LineExtensionAmount', str(t['subtotal']), currencyID='COP')
         _cbc(legal, 'TaxExclusiveAmount', str(t['subtotal']), currencyID='COP')
         _cbc(legal, 'TaxInclusiveAmount', str(t['total']), currencyID='COP')
-        _cbc(legal, 'AllowanceTotalAmount', str(t['descuentos']), currencyID='COP')
+        # Solo descuentos GLOBALES (AllowanceCharge del documento; no se usan). Los de
+        # cada línea ya van en su LineExtensionAmount y en su propio AllowanceCharge:
+        # sumarlos aquí rompe PayableAmount = TaxInclusive − Allowance + Charge (DIAN).
+        _cbc(legal, 'AllowanceTotalAmount', '0.00', currencyID='COP')
         _cbc(legal, 'ChargeTotalAmount', '0.00', currencyID='COP')
         _cbc(legal, 'PayableAmount', str(t['total']), currencyID='COP')
 
@@ -406,6 +409,21 @@ class XMLBuilder:
             _cbc(line, 'ID', str(idx))
             _cbc(line, self.cfg['qty'], str(cant), unitCode=unidad)
             _cbc(line, 'LineExtensionAmount', str(_d(base)), currencyID='COP')
+            if ln['descuento'] > 0:
+                # Descuento de la línea (UBL: va antes de TaxTotal). La DIAN valida
+                # LineExtensionAmount = cantidad × precio − descuento.
+                bruto = _d(cant * precio)
+                ac = _cac(line, 'AllowanceCharge')
+                _cbc(ac, 'ID', '1')
+                _cbc(ac, 'ChargeIndicator', 'false')
+                _cbc(ac, 'AllowanceChargeReason', 'Descuento')
+                # % con 6 decimales si no es exacto: con 2 (33.33 %) Base × % ya no da
+                # el monto del descuento y la DIAN compara los dos.
+                pct = (ln['descuento'] * 100 / bruto) if bruto else Decimal('0')
+                pct = _d(pct) if _d(pct) == pct else pct.quantize(Decimal('0.000001'), rounding=ROUND_HALF_UP)
+                _cbc(ac, 'MultiplierFactorNumeric', str(pct))
+                _cbc(ac, 'Amount', str(_d(ln['descuento'])), currencyID='COP')
+                _cbc(ac, 'BaseAmount', str(bruto), currencyID='COP')
             self._tax_total_node(line, iva_val, base, iva_pct, '01', 'IVA')
 
             item_el = _cac(line, 'Item')

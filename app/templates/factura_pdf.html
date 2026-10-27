@@ -5,19 +5,22 @@
 <!--
   Representación gráfica DIAN (factura, nota crédito, nota débito).
   Diseño: CYBERSHOP Design System — Work Sans, azul de marca (blue-600 #103098),
-  neutros fríos (ink), superficies limpias, un solo acento por vista.
-  El color de acento lo pone el cliente (tenant.color_primario); las notas usan el
-  color semántico de su tipo para distinguirse.
-  Contenido según el Estatuto Tributario art. 617 y la Resolución DIAN 000165 de 2023.
+  superficie inversa blue-900 (#061240), neutros fríos (ink), mucho aire.
+  El acento lo pone el cliente (tenant.color_primario); las notas usan el color
+  semántico de su tipo. La franja del pie presenta el software en todas las páginas.
+  Contenido según el Estatuto Tributario art. 617 y la Resolución DIAN 000165 de 2023:
+  solo cambia la presentación, nunca los datos ni el XML.
+  xhtml2pdf: tarjetas y bordes en celdas (td), no en div; sin esquinas redondeadas.
 -->
 <style>
   /* Work Sans la registra pdf_builder (_registrar_fuentes); sin ella queda Helvetica. */
   @page {
     size: a4 portrait;
-    margin: 1.1cm 1.1cm 2.2cm 1.1cm;
-    @frame pie { -pdf-frame-content: pie; left: 1.1cm; right: 1.1cm; bottom: 0.6cm; height: 1.2cm; }
+    margin: 1.1cm 1.3cm 2.2cm 1.3cm;
+    @frame cinta { -pdf-frame-content: cinta; left: 0; right: 0; top: 0; height: 0.22cm; }
+    @frame pie { -pdf-frame-content: pie; left: 0cm; width: 21cm; bottom: 0cm; height: 1.7cm; }
   }
-  body { font-family: WorkSans, Helvetica, sans-serif; font-size: 8pt; color: #080E1F; line-height: 1.35; }
+  body { font-family: WorkSans, Helvetica, sans-serif; font-size: 8pt; color: #080E1F; line-height: 1.4; }
   table { width: 100%; border-collapse: collapse; }
   td, th { vertical-align: top; }
   .semi { font-family: WorkSansSemi, WorkSans, Helvetica, sans-serif; }
@@ -26,206 +29,232 @@
   .acento { color: {{ color }}; }
   .r { text-align: right; } .c { text-align: center; }
 
+  /* Cinta de color en el borde superior */
+  .cinta td { background-color: {{ color }}; height: 0.22cm; }
+
   /* Encabezado */
-  .emisor-nombre { font-size: 13pt; font-weight: bold; color: #080E1F; }
-  .doc-caja { background-color: {{ color }}; color: #FFFFFF; padding: 9px 12px 10px 12px; }
-  .doc-tipo { font-size: 7.5pt; letter-spacing: 0.6pt; }
-  .doc-num { font-size: 15pt; font-weight: bold; }
-  .doc-meta { font-size: 7.5pt; color: #FFFFFF; }
-  .chip { font-size: 7pt; padding: 2px 6px; }
+  .emisor-nombre { font-size: 14pt; font-weight: bold; color: #080E1F; }
+  .emisor-dato { font-size: 7.6pt; color: #4B5568; }
+  .doc { border-left: 2.5pt solid {{ color }}; background-color: {{ tinte }}; padding: 10px 14px 10px 14px; }
+  .doc-tipo { font-family: WorkSansSemi, WorkSans, sans-serif; font-size: 7pt; letter-spacing: 1.2pt; color: {{ color }}; }
+  .doc-num { font-size: 21pt; font-weight: bold; color: #080E1F; line-height: 1.15; }
+  .doc-meta td { font-size: 7.4pt; padding: 1px 0; }
+  .chip { font-family: WorkSansSemi, WorkSans, sans-serif; font-size: 6.6pt; letter-spacing: 0.6pt; padding: 2px 7px; }
   .chip-ok { background-color: #DCF5E8; color: #0E7A47; }
   .chip-prueba { background-color: #FCEBD2; color: #9C6414; }
 
-  /* Franja de autorización */
-  .franja { background-color: {{ tinte }}; color: #131B2E; padding: 6px 10px; font-size: 7.5pt; }
+  /* Autorización de numeración */
+  .franja td { border-top: 0.75pt solid #E3E8EF; border-bottom: 0.75pt solid #E3E8EF; padding: 6px 0; font-size: 7.2pt; color: #4B5568; }
 
   /* Tarjetas */
-  .tarjeta { background-color: #F7F9FB; padding: 8px 11px 9px 11px; font-size: 8pt; line-height: 1.5; }
-  .rotulo { font-family: WorkSansSemi, WorkSans, sans-serif; font-size: 6.8pt; color: {{ color }};
-            letter-spacing: 0.6pt; padding-bottom: 3px; }
-  .dato { font-size: 8pt; }
-  .dato-fuerte { font-size: 9.5pt; font-weight: bold; color: #080E1F; }
+  .tarjeta { background-color: #F7F9FB; padding: 10px 13px 11px 13px; font-size: 8pt; line-height: 1.55; }
+  .rotulo { font-family: WorkSansSemi, WorkSans, sans-serif; font-size: 6.6pt; color: {{ color }}; letter-spacing: 1.1pt; }
+  .dato-fuerte { font-size: 10pt; font-weight: bold; color: #080E1F; }
   .etiqueta { color: #6B7686; }
 
-  /* Detalle */
-  .items th { background-color: #061240; color: #FFFFFF; padding: 6px 5px; font-size: 7pt;
-              font-family: WorkSansSemi, WorkSans, sans-serif; text-align: left; }
-  .items td { padding: 5px 5px; border-bottom: 0.75pt solid #EEF1F5; font-size: 7.8pt; }
-  .items tr.par td { background-color: #F7F9FB; }
-  .items .desc { color: #080E1F; }
+  /* Detalle: aire, filas limpias y una sola línea de color */
+  .items th { background-color: #FFFFFF; color: {{ color }}; padding: 0 6px 7px 6px; font-size: 6.6pt;
+              letter-spacing: 1pt; font-family: WorkSansSemi, WorkSans, sans-serif; text-align: left;
+              border-bottom: 1.5pt solid {{ color }}; }
+  .items td { padding: 9px 6px 9px 6px; border-bottom: 0.75pt solid #E3E8EF; font-size: 8.6pt; color: #28324A; }
+  .items .n { color: #9AA3B2; font-size: 7.6pt; }
+  .items .desc { font-family: WorkSansSemi, WorkSans, sans-serif; color: #080E1F; font-size: 8.8pt; }
   .items .cod { color: #6B7686; font-size: 7pt; }
+  .items .und { color: #6B7686; font-size: 7pt; }
+  .items .total { font-family: WorkSansSemi, WorkSans, sans-serif; color: #080E1F; }
+  .items .ahorro { color: #0E7A47; }
 
   /* Totales */
-  .tot td { padding: 3.5px 10px; font-size: 8pt; }
-  .tot .linea td { border-bottom: 0.75pt solid #EEF1F5; }
-  .tot .total td { background-color: {{ color }}; color: #FFFFFF; font-size: 10.5pt; font-weight: bold; padding: 7px 10px; }
-  .letras { font-size: 7.5pt; color: #28324A; }
+  .tot td { padding: 5px 14px; font-size: 8.2pt; }
+  .tot .linea td { border-bottom: 0.75pt solid #E3E8EF; }
+  .tot .total td { background-color: #061240; color: #FFFFFF; padding: 10px 12px; }
+  .total-rotulo { font-family: WorkSansSemi, WorkSans, sans-serif; font-size: 7pt; letter-spacing: 1.2pt; color: #A6BDF7; }
+  .total-valor { font-size: 13pt; font-weight: bold; color: #FFFFFF; }
+  .letras { font-size: 7.8pt; color: #28324A; }
 
-  /* Validación */
-  .validacion { border-top: 1.5pt solid {{ color }}; padding-top: 8px; }
+  /* Validación DIAN */
+  .valida { background-color: #F7F9FB; padding: 10px 13px; }
+  .qr { background-color: #FFFFFF; padding: 5px; }
   .cufe { font-family: Courier, monospace; font-size: 6.6pt; color: #28324A; }
-  .legal { font-size: 6.6pt; color: #6B7686; line-height: 1.4; }
-  .pie { font-size: 6.6pt; color: #6B7686; }
+  a.enlace { color: {{ color }}; text-decoration: none; }
+  .legal { font-size: 6.6pt; color: #6B7686; line-height: 1.45; }
+
+  /* Pie: franja del software en todas las páginas */
+  .sw td { background-color: #061240; color: #FFFFFF; vertical-align: middle; }
+  a.sw-marca, .sw-marca { text-decoration: none; font-size: 10pt; font-weight: bold; color: #FFFFFF; }
+  .sw-lema { font-size: 7pt; color: #A6BDF7; }
+  a.sw-web, .sw-web { text-decoration: none; font-family: WorkSansSemi, WorkSans, sans-serif; font-size: 7.6pt; color: #FFFFFF; letter-spacing: 0.4pt; }
+  .sw-pag { font-size: 6.6pt; color: #A6BDF7; }
 </style>
 </head>
 <body>
 
+  <!-- Cinta superior -->
+  <div id="cinta"><table class="cinta"><tr><td>&nbsp;</td></tr></table></div>
+
   <!-- ── Encabezado: emisor y documento ── -->
   <table>
     <tr>
-      <td style="width: 58%; padding-right: 12px;">
-        {% if logo_url %}<img src="{{ logo_url }}" height="48"{% if logo_ancho %} width="{{ logo_ancho }}"{% endif %}/><br/>{% endif %}
-        <div class="emisor-nombre" style="margin-top: 5px;">{{ emisor.nombre }}</div>
-        <div class="tinta2">NIT {{ emisor.nit }} &nbsp;·&nbsp; {{ emisor.regimen }}{% if emisor.responsabilidad %} &nbsp;·&nbsp; {{ emisor.responsabilidad }}{% endif %}</div>
-        <div class="tinta2">{{ emisor.direccion }}{% if emisor.ciudad %} — {{ emisor.ciudad }}{% endif %}</div>
-        <div class="tinta2">{% if emisor.telefono %}Tel. {{ emisor.telefono }}{% endif %}{% if emisor.telefono and emisor.email %} &nbsp;·&nbsp; {% endif %}{{ emisor.email }}</div>
+      <td style="width: 56%; padding-right: 16px; padding-top: 4px;">
+        {% if logo_url %}<img src="{{ logo_url }}" height="66"{% if logo_ancho %} width="{{ logo_ancho }}"{% endif %}/><br/>{% endif %}
+        <div class="emisor-nombre" style="margin-top: 7px;">{{ emisor.nombre }}</div>
+        <div class="emisor-dato" style="margin-top: 2px;">NIT {{ emisor.nit }} &nbsp;·&nbsp; {{ emisor.regimen }}{% if emisor.responsabilidad %} &nbsp;·&nbsp; {{ emisor.responsabilidad }}{% endif %}</div>
+        <div class="emisor-dato">{{ emisor.direccion }}{% if emisor.ciudad %} — {{ emisor.ciudad }}{% endif %}</div>
+        <div class="emisor-dato">{% if emisor.telefono %}Tel. {{ emisor.telefono }}{% endif %}{% if emisor.telefono and emisor.email %} &nbsp;·&nbsp; {% endif %}{{ emisor.email }}</div>
       </td>
-      <td style="width: 42%;">
-        <div class="doc-caja">
-          <div class="doc-tipo">{{ titulo }}</div>
-          <div class="doc-num">No. {{ numero }}</div>
-          <div class="doc-meta">Expedición: {{ fecha }} &nbsp;{{ hora }}</div>
-          {% if vencimiento %}<div class="doc-meta">Vencimiento: {{ vencimiento }}</div>{% endif %}
-        </div>
-        <div style="padding-top: 5px;">
+      <td class="doc" style="width: 44%;">
+        <div class="doc-tipo">{{ titulo }}</div>
+        <div class="doc-num">{{ numero }}</div>
+        <table class="doc-meta" style="margin-top: 5px;">
+          <tr><td class="etiqueta" style="width: 38%;">Expedición</td><td class="semi">{{ fecha }} · {{ hora }}</td></tr>
+          {% if vencimiento %}<tr><td class="etiqueta">Vencimiento</td><td class="semi">{{ vencimiento }}</td></tr>{% endif %}
+        </table>
+        {% if estado == 'ACEPTADA' or ambiente_prueba %}
+        <div style="padding-top: 6px;">
           {% if estado == 'ACEPTADA' %}<span class="chip chip-ok">VALIDADA POR LA DIAN</span>{% endif %}
-          {% if ambiente_prueba %} <span class="chip chip-prueba">AMBIENTE DE PRUEBAS · SIN VALIDEZ FISCAL</span>{% endif %}
+          {% if ambiente_prueba %} <span class="chip chip-prueba">PRUEBAS · SIN VALIDEZ FISCAL</span>{% endif %}
         </div>
+        {% endif %}
       </td>
     </tr>
   </table>
 
-  <div style="height: 8px;"></div>
+  <table><tr><td style="height: 8px; font-size: 1pt;">&nbsp;</td></tr></table>
 
   <!-- ── Autorización de numeración / documento que se ajusta ── -->
-  {% if not es_nota %}
-  <div class="franja">
-    <span class="semi acento">Autorización de numeración de facturación DIAN</span> &nbsp;
-    Resolución No. {{ resolucion.numero }} &nbsp;·&nbsp; Prefijo {{ resolucion.prefijo }} &nbsp;·&nbsp;
-    Rango del {{ resolucion.desde }} al {{ resolucion.hasta }}{% if resolucion.vigencia %} &nbsp;·&nbsp; Vigente hasta {{ resolucion.vigencia }}{% endif %}
-  </div>
-  {% else %}
-  <div class="franja">
-    <span class="semi acento">Documento que se ajusta</span> &nbsp;
-    Factura {{ doc_ref.numero }}{% if doc_ref.fecha %} del {{ doc_ref.fecha }}{% endif %}
-    {% if doc_ref.cufe %}&nbsp;·&nbsp; CUFE {{ doc_ref.cufe[:24] }}…{% endif %}
-    &nbsp;·&nbsp; Concepto: {{ concepto.descripcion or concepto.codigo }}
-  </div>
-  {% endif %}
+  <table class="franja">
+    <tr><td>
+    {% if not es_nota %}
+      <span class="semi acento">AUTORIZACIÓN DIAN</span> &nbsp;&nbsp;
+      Resolución No. {{ resolucion.numero }} &nbsp;·&nbsp; Prefijo {{ resolucion.prefijo }} &nbsp;·&nbsp;
+      Rango {{ resolucion.desde }} al {{ resolucion.hasta }}{% if resolucion.vigencia %} &nbsp;·&nbsp; Vigencia {{ resolucion.vigencia }}{% endif %}
+    {% else %}
+      <span class="semi acento">DOCUMENTO QUE SE AJUSTA</span> &nbsp;&nbsp;
+      Factura {{ doc_ref.numero }}{% if doc_ref.fecha %} del {{ doc_ref.fecha }}{% endif %}
+      {% if doc_ref.cufe %}&nbsp;·&nbsp; CUFE {{ doc_ref.cufe[:24] }}…{% endif %}
+      &nbsp;·&nbsp; Concepto: {{ concepto.descripcion or concepto.codigo }}
+    {% endif %}
+    </td></tr>
+  </table>
 
-  <div style="height: 8px;"></div>
+  <table><tr><td style="height: 8px; font-size: 1pt;">&nbsp;</td></tr></table>
 
   <!-- ── Adquiriente y condiciones ── -->
-  <!-- Tarjetas como celdas con fondo (en xhtml2pdf el borde de un div se pinta en cada línea). -->
   <table>
     <tr>
-      <td class="tarjeta" style="width: 57%;">
-        <span class="rotulo">FACTURADO A</span><br/>
+      <td class="tarjeta" style="width: 58%;">
+        <div class="rotulo">FACTURADO A</div>
         <span class="dato-fuerte">{{ adquiriente.nombre }}</span><br/>
         <span class="etiqueta">{{ adquiriente.doc_tipo }}</span> {{ adquiriente.doc_numero }}{% if adquiriente.tipo_persona %} &nbsp;·&nbsp; <span class="etiqueta">Persona {{ adquiriente.tipo_persona }}</span>{% endif %}<br/>
         {{ adquiriente.direccion or 'Dirección no informada' }}{% if adquiriente.ciudad %} — {{ adquiriente.ciudad }}{% endif %}<br/>
         {% if adquiriente.telefono %}Tel. {{ adquiriente.telefono }}{% endif %}{% if adquiriente.telefono and adquiriente.email %} &nbsp;·&nbsp; {% endif %}{{ adquiriente.email }}
       </td>
       <td style="width: 2%;"></td>
-      <td class="tarjeta" style="width: 41%;">
-        <span class="rotulo">CONDICIONES</span><br/>
-        <span class="etiqueta">Forma de pago:</span> <span class="semi">{{ forma_pago }}</span><br/>
-        <span class="etiqueta">Medio de pago:</span> {{ metodo_pago }}<br/>
-        <span class="etiqueta">Moneda:</span> {{ moneda }}<br/>
-        <span class="etiqueta">Tipo de operación:</span> {{ tipo_operacion }}
+      <td class="tarjeta" style="width: 40%;">
+        <div class="rotulo">CONDICIONES</div>
+        <span class="etiqueta">Forma de pago</span> &nbsp;<span class="semi">{{ forma_pago }}</span><br/>
+        <span class="etiqueta">Medio de pago</span> &nbsp;{{ metodo_pago }}<br/>
+        <span class="etiqueta">Moneda</span> &nbsp;{{ moneda }}<br/>
+        <span class="etiqueta">Tipo de operación</span> &nbsp;{{ tipo_operacion }}
       </td>
     </tr>
   </table>
 
-  <div style="height: 10px;"></div>
+  <table><tr><td style="height: 10px; font-size: 1pt;">&nbsp;</td></tr></table>
 
   <!-- ── Detalle ── -->
   <table class="items" repeat="1">
     <thead>
       <tr>
-        <th style="width: 4%;" class="c">#</th>
-        <th style="width: 33%;">DESCRIPCIÓN</th>
-        <th style="width: 6%;" class="c">UND.</th>
-        <th style="width: 6%;" class="c">CANT.</th>
-        <th style="width: 14%;" class="r">V. UNITARIO</th>
-        <th style="width: 14%;" class="r">DESC.</th>
-        <th style="width: 6%;" class="c">IVA</th>
-        <th style="width: 17%;" class="r">TOTAL</th>
+        <th style="width: 5%;">#</th>
+        <th style="width: 35%;">DESCRIPCIÓN</th>
+        <th style="width: 10%;" class="c">CANTIDAD</th>
+        <th style="width: 16%;" class="r">V. UNITARIO</th>
+        <th style="width: 13%;" class="r">DESCUENTO</th>
+        <th style="width: 5%;" class="c">IVA</th>
+        <th style="width: 16%;" class="r">TOTAL</th>
       </tr>
     </thead>
     <tbody>
       {% for it in items %}
-      <tr class="{{ 'par' if loop.index % 2 == 0 else '' }}">
-        <td class="c tinta3">{{ loop.index }}</td>
-        <td><span class="desc">{{ it.descripcion }}</span>{% if it.codigo %}<br/><span class="cod">Cód. {{ it.codigo }}</span>{% endif %}</td>
-        <td class="c">{{ it.unidad }}</td>
-        <td class="c">{{ it.cantidad }}</td>
-        <td class="r">{{ it.precio }}</td>
-        <td class="r">{{ it.descuento }}</td>
-        <td class="c">{{ it.iva_pct }}</td>
-        <td class="r semi">{{ it.total }}</td>
+      <tr>
+        <td class="n">{{ '%02d' % loop.index }}</td>
+        <td><span class="desc">{{ it.descripcion }}</span>{% if it.codigo %}<br/><span class="cod">Ref. {{ it.codigo }}</span>{% endif %}</td>
+        <td class="c">{{ it.cantidad }}<br/><span class="und">{{ it.unidad }}</span></td>
+        <td class="r">{{ it.precio|nb }}</td>
+        <td class="r{{ ' ahorro' if it.descontado else ' tinta3' }}">{{ ('− ' ~ it.descuento)|nb if it.descontado else it.descuento }}</td>
+        <td class="c tinta3">{{ it.iva_pct }}</td>
+        <td class="r total">{{ it.total|nb }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 
-  <div style="height: 10px;"></div>
+  <table><tr><td style="height: 10px; font-size: 1pt;">&nbsp;</td></tr></table>
 
   <!-- ── Valor en letras, notas y totales ── -->
   <table>
     <tr>
-      <td style="width: 56%; padding-right: 12px;">
+      <td style="width: 54%; padding-right: 18px;">
         <div class="rotulo">VALOR EN LETRAS</div>
-        <div class="letras">{{ total_letras }}</div>
+        <div class="letras" style="margin-top: 2px;">{{ total_letras }}</div>
         {% if notas %}
-        <div style="height: 7px;"></div>
+        <table><tr><td style="height: 10px; font-size: 1pt;">&nbsp;</td></tr></table>
         <div class="rotulo">OBSERVACIONES</div>
-        <div class="letras">{{ notas }}</div>
+        <div class="letras" style="margin-top: 2px;">{{ notas }}</div>
         {% endif %}
       </td>
-      <td style="width: 44%;">
+      <td style="width: 46%;">
         <table class="tot">
-          <tr class="linea"><td class="etiqueta">Subtotal</td><td class="r">{{ bruto }}</td></tr>
+          <tr class="linea"><td class="etiqueta" style="width: 42%;">Subtotal</td><td class="r">{{ bruto }}</td></tr>
           <tr class="linea"><td class="etiqueta">Descuentos</td><td class="r">{{ descuentos }}</td></tr>
           <tr class="linea"><td class="etiqueta">Base gravable</td><td class="r">{{ subtotal }}</td></tr>
-          <tr class="linea"><td class="etiqueta">{% if responsable_iva %}IVA 19 %{% else %}IVA (no responsable){% endif %}</td><td class="r">{{ iva }}</td></tr>
-          <tr class="total"><td>{{ 'TOTAL A PAGAR' if not es_nota else 'TOTAL NOTA' }}</td><td class="r">{{ total }}</td></tr>
+          <tr class="linea"><td class="etiqueta">{% if responsable_iva %}IVA 19 %{% else %}IVA (no resp.){% endif %}</td><td class="r">{{ iva }}</td></tr>
+          <tr class="total">
+            <td style="vertical-align: middle;"><span class="total-rotulo">{{ 'TOTAL A PAGAR' if not es_nota else 'TOTAL NOTA' }}</span></td>
+            <td class="r"><span class="total-valor">{{ total|nb }}</span></td>
+          </tr>
         </table>
       </td>
     </tr>
   </table>
 
-  <div style="height: 12px;"></div>
+  <table><tr><td style="height: 10px; font-size: 1pt;">&nbsp;</td></tr></table>
 
   <!-- ── Validación DIAN: QR + CUFE/CUDE + textos legales ── -->
-  <div class="validacion">
-    <table>
-      <tr>
-        <td style="width: 17%;">
-          <img src="{{ qr_b64 }}" style="width: 86px; height: 86px;"/>
-        </td>
-        <td style="width: 83%; padding-left: 10px;">
-          <div class="rotulo">{{ 'CUDE' if es_nota else 'CUFE' }} · CÓDIGO ÚNICO DE {{ 'DOCUMENTO' if es_nota else 'FACTURA' }} ELECTRÓNICA</div>
-          <div class="cufe">{{ cufe }}</div>
-          <div style="height: 5px;"></div>
-          <div class="legal">
-            Representación gráfica de la {{ titulo|lower }}. Su validez se verifica escaneando el código QR o en
-            catalogo-vpfe.dian.gov.co con el {{ 'CUDE' if es_nota else 'CUFE' }}.
-            {% if not es_nota %}Esta factura se asimila en todos sus efectos a una letra de cambio (art. 774 del Código de Comercio).{% endif %}
-            {% if not responsable_iva %}El emisor no es responsable del impuesto sobre las ventas (IVA).{% endif %}
-            <br/>Software: {{ software.nombre }} &nbsp;·&nbsp; Fabricante del software: {{ software.fabricante }}, NIT {{ software.nit }}.
-          </div>
-        </td>
-      </tr>
-    </table>
-  </div>
+  <table>
+    <tr>
+      <td class="valida" style="width: 17%; padding-right: 0;">
+        <table><tr><td class="qr"><img src="{{ qr_b64 }}" style="width: 70px; height: 70px;"/></td></tr></table>
+      </td>
+      <td class="valida" style="width: 83%;">
+        <span class="rotulo">{{ 'CUDE' if es_nota else 'CUFE' }} · CÓDIGO ÚNICO DE {{ 'DOCUMENTO' if es_nota else 'FACTURA' }} ELECTRÓNICA</span><br/>
+        <span class="cufe">{{ cufe }}</span><br/>
+        <span class="legal">
+          Representación gráfica de la {{ titulo|lower }}. Verifique su validez escaneando el código QR o en
+          <a href="{{ qr_url }}" class="enlace">catalogo-vpfe.dian.gov.co</a> con el {{ 'CUDE' if es_nota else 'CUFE' }}.
+          {% if not es_nota %}Esta factura se asimila en todos sus efectos a una letra de cambio (art. 774 del Código de Comercio).{% endif %}
+          {% if not responsable_iva %}El emisor no es responsable del impuesto sobre las ventas (IVA).{% endif %}
+          <br/>Software: {{ software.nombre }} &nbsp;·&nbsp; Fabricante del software: {{ software.fabricante }}, NIT {{ software.nit }}.
+        </span>
+      </td>
+    </tr>
+  </table>
 
-  <!-- Pie en todas las páginas -->
+  <!-- Pie en todas las páginas: franja del software + número de página -->
   <div id="pie">
-    <table>
+    <table class="sw">
       <tr>
-        <td class="pie" style="width: 70%;">{{ emisor.nombre }} · NIT {{ emisor.nit }} · {{ titulo|title }} No. {{ numero }}</td>
-        <td class="pie r" style="width: 30%;">Página <pdf:pagenumber/> de <pdf:pagecount/></td>
+        <td style="width: 37px; height: 1.6cm;">&nbsp;</td>
+        {% if marca_software %}<td style="width: 58px;"><img src="{{ marca_software }}" height="36" width="51"/></td>{% endif %}
+        <td style="width: 52%; padding-left: 8px;">
+          <span class="sw-lema">Facturado con</span>&nbsp; <a href="{{ software.url }}" class="sw-marca">{{ software.marca }}</a><br/>
+          <span class="sw-lema">{{ software.lema }}</span>
+        </td>
+        <td class="r" style="padding-right: 37px;">
+          <a href="{{ software.url }}" class="sw-web">{{ software.web }}</a><br/>
+          <span class="sw-pag">{{ numero }} · Página <pdf:pagenumber/> de <pdf:pagecount/></span>
+        </td>
       </tr>
     </table>
   </div>

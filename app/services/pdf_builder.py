@@ -23,6 +23,8 @@ from xhtml2pdf import pisa
 _TPL_DIR = Path(__file__).parent.parent / 'templates'
 _env = Environment(loader=FileSystemLoader(str(_TPL_DIR)),
                    autoescape=select_autoescape(['html', 'xml']))
+# Valores sin cortes de línea: «$ 200.000,00» nunca se parte en la tabla.
+_env.filters['nb'] = lambda v: str(v).replace(' ', ' ')
 
 TITULOS = {
     'factura':      'FACTURA ELECTRÓNICA DE VENTA',
@@ -79,7 +81,21 @@ SOFTWARE = {
     'nombre': os.getenv('SOFTWARE_NOMBRE', 'Software CyberShop — Facturación electrónica'),
     'fabricante': os.getenv('SOFTWARE_FABRICANTE', 'Anderson German Roa Cabiativa'),
     'nit': os.getenv('SOFTWARE_FABRICANTE_NIT', '1027150819-7'),
+    # Franja del software al pie de cada página (solo presentación; no toca el XML).
+    'marca': os.getenv('SOFTWARE_MARCA', 'Software CyberShop'),
+    'lema': os.getenv('SOFTWARE_LEMA', 'Facturación electrónica, POS, inventario y contabilidad en un solo sistema'),
+    'web': os.getenv('SOFTWARE_WEB', 'cybershopcol.com'),
+    'url': os.getenv('SOFTWARE_URL', 'https://cybershopcol.com/software'),
 }
+_MARCA_SOFTWARE = Path(__file__).parent.parent / 'assets' / 'marca' / 'cybershop_sobre_oscuro.png'
+
+
+def _marca_software():
+    """Logo del software ya aplanado sobre el azul de la franja (xhtml2pdf pinta mal el alfa)."""
+    try:
+        return 'data:image/png;base64,' + base64.b64encode(_MARCA_SOFTWARE.read_bytes()).decode('ascii')
+    except OSError:
+        return ''
 
 TIPO_DOC = {'13': 'C.C.', 'CC': 'C.C.', '31': 'NIT', 'NIT': 'NIT', '22': 'C.E.', 'CE': 'C.E.',
             '41': 'Pasaporte', 'PA': 'Pasaporte', '42': 'Doc. extranjero', '12': 'T.I.', 'TI': 'T.I.',
@@ -271,6 +287,7 @@ def generar_pdf(tenant: dict, datos: dict, numero: str, cufe: str,
             'codigo': it.get('codigo', ''), 'descripcion': it.get('descripcion', ''),
             'unidad': UNIDADES.get(unidad, unidad),
             'cantidad': format(cant.normalize(), 'f') if cant != cant.to_integral() else str(int(cant)),
+            'descontado': bool(desc),
             'precio': _money(precio),
             'descuento': _money(desc) if desc else '—',
             'iva_pct': f"{iva_pct.normalize():f}%", 'total': _money(base),
@@ -281,7 +298,7 @@ def generar_pdf(tenant: dict, datos: dict, numero: str, cufe: str,
     qr_url = _qr_url(tenant, cufe)
     color = COLOR_POR_TIPO.get(tipo) or tenant.get('color_primario') or COLOR_MARCA
     logo = _logo_data_uri(tenant.get('logo_url') or '')
-    logo_ancho = _ancho_logo(logo, alto=48, maximo=210)
+    logo_ancho = _ancho_logo(logo, alto=66, maximo=260)
     doc_tipo = str(cliente.get('tipo_documento', 'CC'))
     vencimiento = datos.get('fecha_vencimiento') or ''
     credito = bool(vencimiento) or str(datos.get('forma_pago', '1')) == '2'
@@ -289,7 +306,8 @@ def generar_pdf(tenant: dict, datos: dict, numero: str, cufe: str,
     ctx = {
         'titulo': TITULOS[tipo],
         'es_nota': tipo != 'factura',
-        'numero': numero, 'cufe': cufe, 'fecha': fecha, 'hora': hora,
+        'numero': numero, 'cufe': cufe, 'fecha': fecha, 'hora': str(hora or '')[:8],
+        'marca_software': _marca_software(),
         'vencimiento': vencimiento,
         'estado': estado,
         'ambiente_prueba': (tenant.get('ambiente') or 'habilitacion') == 'habilitacion',
