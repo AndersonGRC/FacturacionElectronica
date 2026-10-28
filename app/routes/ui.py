@@ -225,6 +225,38 @@ def _facturas_aceptadas(tenant_id):
     return out
 
 
+# ── «Volver a mi panel» ───────────────────────────────────────────────────────
+# Quien entraba al portal desde CyberShop no tenía cómo regresar a su panel. El
+# enlace de entrada trae `volver` (la bandeja de su panel). Solo se acepta hacia
+# CyberShop o hacia el sitio registrado del propio cliente (cybershop_base_url),
+# para que el botón nunca mande a un sitio ajeno.
+PANEL_CYBERSHOP = os.getenv('CYBERSHOP_ADMIN_URL',
+                            'https://cybershopcol.com/admin/facturacion-dian/bandeja')
+
+
+def _url_volver(url, base_cliente=None):
+    """`url` si es https hacia CyberShop o el sitio del cliente; si no, None."""
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(str(url or '').strip())
+        host_cliente = (urlparse(base_cliente).hostname or '').lower() if base_cliente else ''
+    except ValueError:
+        return None
+    host = (u.hostname or '').lower()
+    if u.scheme != 'https' or not host:
+        return None
+    if host == 'cybershopcol.com' or host.endswith('.cybershopcol.com') or host == host_cliente:
+        return u.geturl()
+    return None
+
+
+def _volver_de_cliente(base_cliente):
+    """La bandeja de facturación del panel del cliente, si su sitio está registrado."""
+    if not base_cliente:
+        return None
+    return _url_volver(str(base_cliente).rstrip('/') + '/admin/facturacion-dian/bandeja', base_cliente)
+
+
 # ── Admin SSO (CyberShop) ─────────────────────────────────────────────────────
 
 @ui_bp.route('/auto-login')
@@ -255,6 +287,7 @@ def auto_login():
     session.clear()
     session['ui_auth'] = True
     session['ui_role'] = 'admin'
+    session['ui_volver'] = _url_volver(request.args.get('volver')) or PANEL_CYBERSHOP
     return redirect(next_)
 
 
@@ -296,7 +329,8 @@ def tenant_auto_login():
 
     with get_db_cursor(dict_cursor=True) as cur:
         cur.execute(
-            "SELECT id, nombre, ambiente, portal_activo, logo_url FROM tenants WHERE id = %s AND activo = TRUE",
+            "SELECT id, nombre, ambiente, portal_activo, logo_url, cybershop_base_url "
+            "FROM tenants WHERE id = %s AND activo = TRUE",
             (tenant_id,)
         )
         t = cur.fetchone()
@@ -311,6 +345,8 @@ def tenant_auto_login():
     session['ui_tenant_nombre']   = t['nombre']
     session['ui_tenant_ambiente'] = t['ambiente']
     session['ui_tenant_logo']     = t.get('logo_url')
+    session['ui_volver']          = (_url_volver(request.args.get('volver'), t.get('cybershop_base_url'))
+                                     or _volver_de_cliente(t.get('cybershop_base_url')))
     return redirect(url_for('ui.tenant_home'))
 
 
@@ -327,6 +363,7 @@ def login():
             session.clear()
             session['ui_auth'] = True
             session['ui_role'] = 'admin'
+            session['ui_volver'] = PANEL_CYBERSHOP
             return redirect(request.args.get('next') or url_for('ui.dashboard'))
         flash('Contraseña incorrecta', 'danger')
     return render_template('ui/login.html')
@@ -358,7 +395,8 @@ def tenant_login():
         with get_db_cursor(dict_cursor=True) as cur:
             cur.execute("""
                 SELECT id, nombre, ambiente, portal_password_hash, portal_activo,
-                       portal_intentos_fallidos, portal_bloqueado_hasta, logo_url
+                       portal_intentos_fallidos, portal_bloqueado_hasta, logo_url,
+                       cybershop_base_url
                 FROM tenants
                 WHERE LOWER(portal_usuario) = %s
             """, (usuario,))
@@ -419,6 +457,7 @@ def tenant_login():
         session['ui_tenant_nombre']   = t['nombre']
         session['ui_tenant_ambiente'] = t['ambiente']
         session['ui_tenant_logo']     = t.get('logo_url')
+        session['ui_volver']          = _volver_de_cliente(t.get('cybershop_base_url'))
         return redirect(url_for('ui.tenant_home'))
 
     return render_template('ui/tenant_portal_login.html')

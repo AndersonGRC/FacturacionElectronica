@@ -28,6 +28,10 @@
     </div>
 
     <nav class="nav flex-column mt-2">
+      {% if session.get('ui_volver') %}
+      <a class="nav-link" href="{{ session.get('ui_volver') }}"><i class="bi bi-arrow-left-circle"></i>Volver a mi panel</a>
+      <hr class="mx-3" style="border-color:rgba(255,255,255,.15)">
+      {% endif %}
       {% if session.get('ui_role') == 'admin' %}
       <a class="nav-link {% if request.endpoint == 'ui.dashboard' %}active{% endif %}" href="{{ url_for('ui.dashboard') }}"><i class="bi bi-speedometer2"></i>Dashboard</a>
       <a class="nav-link {% if 'tenants' in request.endpoint %}active{% endif %}" href="{{ url_for('ui.tenants') }}"><i class="bi bi-building"></i>Clientes</a>
@@ -76,6 +80,9 @@
       </button>
       <span class="crumb">{% block breadcrumb %}{% endblock %}</span>
       <div class="ms-auto d-flex align-items-center gap-2">
+        {% if session.get('ui_volver') %}
+        <a href="{{ session.get('ui_volver') }}" class="btn btn-sm btn-primary"><i class="bi bi-arrow-left me-1"></i>Volver a mi panel</a>
+        {% endif %}
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% for cat, msg in messages %}
             <div class="alert alert-{{ cat }} alert-dismissible py-1 px-3 mb-0 small" role="alert">
