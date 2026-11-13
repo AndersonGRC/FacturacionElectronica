@@ -64,6 +64,7 @@
         <span class="badge bg-warning text-dark mt-2"><i class="bi bi-tools me-1"></i>MODO PRUEBAS</span>
         <form method="POST" action="{{ url_for('ui.solicitar_produccion') }}" class="mt-2"
               onsubmit="return confirm('¿Solicitar al administrador activar tu facturación en PRODUCCIÓN (facturas reales con validez legal)?')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button class="btn btn-sm btn-light w-100"><i class="bi bi-rocket-takeoff me-1"></i>Solicitar producción</button>
         </form>
         {% endif %}

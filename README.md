@@ -26,6 +26,21 @@ Copiar `app/.env.example` → `app/.env` y llenar valores (BD, `MASTER_API_KEY`,
 `FERNET_KEY`, broker Redis, certificado de pruebas). **El `.env`, los
 certificados (`storage/`) y los logs están excluidos de git.**
 
+## Pruebas
+`tests/` corre contra una base PostgreSQL de **prueba** (el nombre debe terminar
+en `_test`; si no, se saltan) y con la DIAN y la firma simuladas: ninguna prueba
+se conecta a la DIAN.
+
+```
+DB_NAME=facturacion_dian_test DB_USER=... DB_PASSWORD=... python -m pytest tests
+```
+
+Cubren: un reintento reenvía el mismo XML (mismo número, fecha y CUFE); la
+Regla 90 («procesado anteriormente») se resuelve consultando por CUFE; no se
+numera fuera del rango ni con la resolución vencida; producción exige los datos
+reales del emisor; el set de pruebas solo funciona en habilitación; todo POST
+del portal exige token.
+
 ## Producción
 Corre en el mismo VPS del ecosistema (`/var/www/FacturacionDIAN`) con los
 servicios `facturacion-dian` (gunicorn) y `facturacion-dian-worker` (celery).

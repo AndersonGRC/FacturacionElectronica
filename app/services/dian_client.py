@@ -23,6 +23,7 @@ import base64
 import hashlib
 import io
 import logging
+import re
 import uuid
 import zipfile
 from datetime import datetime, timezone, timedelta
@@ -66,7 +67,19 @@ DIAN_URLS = {
 
 ACTION_SEND_BILL = 'http://wcf.dian.colombia/IWcfDianCustomerServices/SendBillSync'
 ACTION_GET_STATUS = 'http://wcf.dian.colombia/IWcfDianCustomerServices/GetStatusZip'
+ACTION_GET_STATUS_DOC = 'http://wcf.dian.colombia/IWcfDianCustomerServices/GetStatus'
 ACTION_SEND_TEST = 'http://wcf.dian.colombia/IWcfDianCustomerServices/SendTestSetAsync'
+
+# Regla 90 del anexo técnico: «Documento procesado anteriormente». La DIAN la
+# devuelve cuando recibe otra vez un documento con un CUFE que ya tiene; es la
+# señal de que un envío anterior sí llegó (por ejemplo, tras un timeout).
+_REGLA_90 = re.compile(r'regla\s*:?\s*90\b|procesado\s+anteriormente', re.IGNORECASE)
+
+
+def es_documento_ya_procesado(resultado: dict) -> bool:
+    """True si la DIAN rechazó el envío solo porque ya tenía ese documento."""
+    textos = list(resultado.get('errors') or []) + [resultado.get('description') or '']
+    return any(_REGLA_90.search(t or '') for t in textos)
 
 
 def _qn(ns: str, tag: str) -> str:
@@ -179,6 +192,15 @@ class DIANClient:
         etree.SubElement(op, _qn(NS_WCF, 'trackId')).text = cufe
         envelope = self._firmar_sobre(op, ACTION_GET_STATUS)
         response = self._post(envelope, ACTION_GET_STATUS)
+        return self._parsear_response(response.content)
+
+    def consultar_por_cufe(self, cufe: str) -> dict:
+        """Pregunta a la DIAN por un documento ya recibido, usando su CUFE/CUDE
+        (operación GetStatus). Es una consulta: no envía ni crea documentos."""
+        op = etree.Element(_qn(NS_WCF, 'GetStatus'), nsmap={'wcf': NS_WCF})
+        etree.SubElement(op, _qn(NS_WCF, 'trackId')).text = cufe
+        envelope = self._firmar_sobre(op, ACTION_GET_STATUS_DOC)
+        response = self._post(envelope, ACTION_GET_STATUS_DOC)
         return self._parsear_response(response.content)
 
     def _parsear_zipkey(self, response_bytes: bytes) -> dict:
@@ -352,9 +374,16 @@ class DIANClient:
                     resultado['description'] = text
                 elif tag == 'StatusMessage' and text:
                     resultado['description'] = resultado['description'] or text
-                elif tag in ('ErrorMessage', 'ProcessedMessage') and text:
-                    if text not in resultado['errors']:
-                        resultado['errors'].append(text)
+                elif tag in ('ErrorMessage', 'ProcessedMessage'):
+                    # ErrorMessage es una lista: cada regla viene en un <string>
+                    # hijo. Antes solo se leía el texto propio (vacío), así que
+                    # el motivo del rechazo («Regla: 90, …») se perdía.
+                    textos = [text] if text else []
+                    textos += [(s.text or '').strip() for s in el.iterdescendants()
+                               if (s.text or '').strip()]
+                    for t in textos:
+                        if t not in resultado['errors']:
+                            resultado['errors'].append(t)
                 elif tag in ('XmlDocumentKey', 'UUID') and text and len(text) > 20:
                     resultado['cufe_dian'] = text
                 # Faults SOAP 1.2: <soap:Reason><soap:Text>...</soap:Text></soap:Reason>

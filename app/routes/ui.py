@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 
-from flask import (Blueprint, flash, redirect, render_template,
+from flask import (Blueprint, flash, has_request_context, redirect, render_template,
                    request, send_file, session, url_for, jsonify)
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -352,19 +352,48 @@ def tenant_auto_login():
 
 # ── Admin login / logout ───────────────────────────────────────────────────────
 
+# Intentos fallidos del login de administrador, por IP (en memoria de cada
+# proceso). Antes no había límite: la llave maestra se podía probar sin fin.
+_FALLOS_ADMIN: dict = {}
+MAX_FALLOS_ADMIN = 5
+VENTANA_FALLOS_ADMIN = 15 * 60   # segundos
+
+
+def _ip_cliente() -> str:
+    return (request.headers.get('CF-Connecting-IP')
+            or (request.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+            or request.remote_addr or '?')
+
+
+def _fallos_recientes(ip: str) -> list:
+    ahora = time.time()
+    recientes = [t for t in _FALLOS_ADMIN.get(ip, []) if ahora - t < VENTANA_FALLOS_ADMIN]
+    if recientes:
+        _FALLOS_ADMIN[ip] = recientes
+    else:
+        _FALLOS_ADMIN.pop(ip, None)
+    return recientes
+
+
 @ui_bp.route('/login', methods=['GET', 'POST'])
 def login():
     if session.get('ui_role') == 'admin':
         return redirect(url_for('ui.dashboard'))
     if request.method == 'POST':
+        ip = _ip_cliente()
+        if len(_fallos_recientes(ip)) >= MAX_FALLOS_ADMIN:
+            flash('Demasiados intentos fallidos. Espera 15 minutos e intenta de nuevo.', 'danger')
+            return render_template('ui/login.html'), 429
         master_key = os.getenv('MASTER_API_KEY', '')
         provided   = request.form.get('password', '')
-        if hmac.compare_digest(master_key.encode(), provided.encode()):
+        if master_key and hmac.compare_digest(master_key.encode(), provided.encode()):
+            _FALLOS_ADMIN.pop(ip, None)
             session.clear()
             session['ui_auth'] = True
             session['ui_role'] = 'admin'
             session['ui_volver'] = PANEL_CYBERSHOP
             return redirect(request.args.get('next') or url_for('ui.dashboard'))
+        _FALLOS_ADMIN.setdefault(ip, []).append(time.time())
         flash('Contraseña incorrecta', 'danger')
     return render_template('ui/login.html')
 
@@ -671,7 +700,9 @@ def tenant_guardar(tenant_id=None):
                 int(f.get('digito_verificacion', 0) or 0),
                 f.get('razon_social', '').strip(),
                 api_key_hash,
-                f.get('ambiente', 'habilitacion'),
+                # Todo emisor nace en habilitación: a producción solo se pasa con
+                # el botón «Pasar a Producción», que exige los datos reales.
+                'habilitacion',
                 f.get('prefijo', '').strip(),
                 f.get('clave_tecnica', '').strip() or None,
                 f.get('software_id', '').strip() or None,
@@ -756,9 +787,12 @@ def tenant_subir_cert(tenant_id):
     return redirect(url_for('ui.tenant_detalle', tenant_id=tenant_id))
 
 
-@ui_bp.route('/tenants/<tenant_id>/regen')
+@ui_bp.route('/tenants/<tenant_id>/regen', methods=['POST'])
 @_login_admin
 def tenant_regenerar_key(tenant_id):
+    # Antes era un GET: bastaba abrir un enlace (incluso desde otra página) para
+    # invalidar la llave del cliente y cortarle la facturación. Ahora es un
+    # formulario con token.
     api_key      = os.urandom(32).hex()
     api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
     with get_db_cursor() as cur:
@@ -902,7 +936,42 @@ def _csrf_token():
 
 
 def _csrf_ok(form):
-    return form.get('csrf_token') and form.get('csrf_token') == session.get('csrf_token')
+    enviado  = form.get('csrf_token') or ''
+    esperado = session.get('csrf_token') or ''
+    return bool(enviado and esperado) and hmac.compare_digest(enviado.encode(), esperado.encode())
+
+
+# Los formularios de entrada no tienen sesión todavía: no llevan token.
+_CSRF_EXENTOS = {'ui.login', 'ui.tenant_login'}
+
+
+@ui_bp.before_request
+def _csrf_en_todo_post():
+    """Todo POST del portal exige el token de la sesión.
+
+    Antes solo algunos lo pedían: guardar el emisor, subir el certificado,
+    cambiar de ambiente, los datos de producción, las credenciales del portal,
+    cancelar una factura y solicitar producción aceptaban un formulario enviado
+    desde otra página mientras la sesión estuviera abierta.
+    """
+    if request.method != 'POST' or request.endpoint in _CSRF_EXENTOS:
+        return None
+    if _csrf_ok(request.form):
+        return None
+    flash('La página llevaba mucho tiempo abierta o la solicitud no salió del portal. '
+          'Recarga la página e intenta de nuevo.', 'danger')
+    volver = request.referrer or ''
+    if not volver.startswith(request.host_url):
+        volver = url_for('ui.facturas') if session.get('ui_role') else url_for('ui.login')
+    return redirect(volver)
+
+
+@ui_bp.app_context_processor
+def _csrf_en_plantillas():
+    """El token queda disponible en todas las plantillas del portal."""
+    if not has_request_context() or not (request.blueprint == 'ui'):
+        return {}
+    return {'csrf_token': _csrf_token()}
 
 
 # ── Emisión autoservicio (rol tenant) ──────────────────────────────────────────
@@ -1085,6 +1154,21 @@ def _muestra_datos(tipo, i, ref=None):
     return base
 
 
+def _en_habilitacion(tenant_id) -> bool:
+    """El set de pruebas solo existe para emisores en habilitación."""
+    if not tenant_id:
+        return False
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT ambiente FROM tenants WHERE id = %s", (tenant_id,))
+        t = cur.fetchone()
+    return bool(t) and t['ambiente'] == 'habilitacion'
+
+
+MSG_PRUEBAS_SOLO_HABILITACION = (
+    'El set de pruebas solo funciona con emisores en habilitación. Este emisor está '
+    'en producción: un documento de prueba sería una factura real con numeración real.')
+
+
 def _emitir_y_enviar(tenant_id, datos):
     """Emite un documento del set de pruebas respetando la política de envío.
 
@@ -1092,7 +1176,12 @@ def _emitir_y_enviar(tenant_id, datos):
     enviar_ahora() de inmediato, así que configurar 'manual — no enviar nada
     hasta que yo apruebe' no protegía el módulo de pruebas. En modo manual el
     documento queda PENDIENTE esperando aprobación y NO sale a la DIAN.
+
+    Tampoco miraba el ambiente: en un emisor de producción emitía facturas
+    reales a «Cliente Prueba DIAN». Ahora se niega.
     """
+    if not _en_habilitacion(tenant_id):
+        raise EmisionError(MSG_PRUEBAS_SOLO_HABILITACION)
     modo, _ = _tenant_envio(tenant_id)
     manual  = (modo == 'manual')
     res = emitir_documento(tenant_id, datos, delay_seconds=0,
@@ -1106,7 +1195,9 @@ def _emitir_y_enviar(tenant_id, datos):
 @_login_admin
 def pruebas():
     with get_db_cursor(dict_cursor=True) as cur:
-        cur.execute("SELECT id, nombre, nit, ambiente FROM tenants WHERE activo=TRUE ORDER BY nombre")
+        # Solo emisores en habilitación: en producción el set emitiría facturas reales.
+        cur.execute("SELECT id, nombre, nit, ambiente FROM tenants "
+                    "WHERE activo=TRUE AND ambiente='habilitacion' ORDER BY nombre")
         tenants = [dict(r) for r in cur.fetchall()]
         for t in tenants:
             t['id'] = str(t['id'])
@@ -1129,6 +1220,9 @@ def pruebas_lote():
     if not _csrf_ok(request.form):
         flash('Sesión expirada.', 'danger'); return redirect(url_for('ui.pruebas'))
     tenant_id = request.form.get('tenant_id')
+    if not _en_habilitacion(tenant_id):
+        flash(MSG_PRUEBAS_SOLO_HABILITACION, 'danger')
+        return redirect(url_for('ui.pruebas'))
     n_fv = max(0, min(50, int(request.form.get('n_fv', 0) or 0)))
     n_nc = max(0, min(50, int(request.form.get('n_nc', 0) or 0)))
     n_nd = max(0, min(50, int(request.form.get('n_nd', 0) or 0)))
@@ -1170,6 +1264,9 @@ def pruebas_individual():
     if not _csrf_ok(request.form):
         flash('Sesión expirada.', 'danger'); return redirect(url_for('ui.pruebas'))
     tenant_id = request.form.get('tenant_id')
+    if not _en_habilitacion(tenant_id):
+        flash(MSG_PRUEBAS_SOLO_HABILITACION, 'danger')
+        return redirect(url_for('ui.pruebas'))
     tipo = request.form.get('tipo', 'factura')
     if tipo not in ('factura', 'nota_credito', 'nota_debito'):
         tipo = 'factura'

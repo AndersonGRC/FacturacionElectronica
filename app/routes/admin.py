@@ -39,6 +39,10 @@ def crear_tenant():
     if faltantes:
         return jsonify({"error": f"Campos requeridos: {faltantes}"}), 422
 
+    # Todo emisor nace en habilitación. Antes se aceptaba 'produccion' aquí y se
+    # saltaba el candado del portal (que exige resolución y credenciales reales).
+    pidio_produccion = str(datos.get('ambiente') or '').strip().lower() == 'produccion'
+
     # Generar API Key aleatorio (64 chars hex = 256 bits de entropía)
     api_key      = os.urandom(32).hex()
     api_key_hash = hashlib.sha256(api_key.encode('utf-8')).hexdigest()
@@ -58,7 +62,7 @@ def crear_tenant():
                     int(datos['digito_verificacion']),
                     datos['razon_social'],
                     api_key_hash,
-                    datos.get('ambiente', 'habilitacion'),
+                    'habilitacion',
                     datos.get('prefijo', ''),
                     datos.get('clave_tecnica', ''),
                 )
@@ -68,14 +72,19 @@ def crear_tenant():
             return jsonify({"error": f"NIT ya registrado: {datos['nit']}"}), 409
         raise
 
-    return jsonify({
+    respuesta = {
         "id":       tenant_id,
         "api_key":  api_key,
+        "ambiente": "habilitacion",
         "advertencia": (
             "Guarda el api_key de inmediato — no puede recuperarse después. "
             "El servidor solo almacena su hash SHA256."
         )
-    }), 201
+    }
+    if pidio_produccion:
+        respuesta["aviso"] = ("El emisor se creó en habilitación. Para pasar a producción "
+                              "carga los datos reales en el portal y usa «Pasar a Producción».")
+    return jsonify(respuesta), 201
 
 
 @admin_bp.route('/tenants/<tenant_id>', methods=['GET'])
@@ -121,15 +130,22 @@ def obtener_tenant(tenant_id):
 def actualizar_tenant(tenant_id):
     """
     Actualiza configuración del tenant.
-    Campos actualizables: nombre, razon_social, ambiente, prefijo,
+    Campos actualizables: nombre, razon_social, prefijo,
                           clave_tecnica, resolucion_*, activo
+
+    El ambiente NO se cambia por aquí: pasar a producción solo se hace desde el
+    portal, que guarda la configuración de cada ambiente y exige los datos reales.
     """
     datos = request.get_json(silent=True)
     if not datos:
         return jsonify({"error": "JSON requerido"}), 400
 
+    if 'ambiente' in datos:
+        return jsonify({"error": "El ambiente no se cambia por la API. Usa «Pasar a "
+                                 "Producción» en el portal tributario."}), 409
+
     campos_permitidos = [
-        'nombre', 'razon_social', 'ambiente', 'prefijo',
+        'nombre', 'razon_social', 'prefijo',
         'clave_tecnica', 'resolucion_dian', 'resolucion_fecha',
         'resolucion_desde', 'resolucion_hasta', 'resolucion_vigencia',
         'activo',

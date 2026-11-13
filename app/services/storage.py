@@ -37,17 +37,31 @@ class StorageManager:
         cert_dir.mkdir(parents=True, exist_ok=True)
         return cert_dir
 
+    def _escribir_sin_pisar(self, nombre_base: str, contenido: bytes) -> str:
+        """Escribe `contenido` sin sobrescribir nunca un archivo distinto.
+
+        Estos archivos son el soporte que se conserva 5 años (art. 632 ET). Antes
+        cada reintento pisaba el XML y la respuesta del intento anterior, así que
+        el archivo guardado podía no ser el que la DIAN validó. Ahora, si ya hay
+        un archivo con otro contenido, el nuevo se guarda al lado con un sufijo.
+        """
+        directorio = self._get_doc_dir()
+        path = directorio / f"{nombre_base}.xml"
+        if path.exists():
+            if path.read_bytes() == contenido:
+                return str(path)
+            sello = datetime.now().strftime('%Y%m%d%H%M%S%f')
+            path = directorio / f"{nombre_base}.{sello}.xml"
+        path.write_bytes(contenido)
+        return str(path)
+
     def guardar_xml(self, xml_bytes: bytes, numero_factura: str) -> str:
         """Guarda el XML UBL 2.1 firmado. Retorna la ruta absoluta como string."""
-        path = self._get_doc_dir() / f"{numero_factura}_firmado.xml"
-        path.write_bytes(xml_bytes)
-        return str(path)
+        return self._escribir_sin_pisar(f"{numero_factura}_firmado", xml_bytes)
 
     def guardar_response(self, response_bytes: bytes, numero_factura: str) -> str:
         """Guarda el ApplicationResponse de la DIAN. Retorna la ruta absoluta."""
-        path = self._get_doc_dir() / f"{numero_factura}_response.xml"
-        path.write_bytes(response_bytes)
-        return str(path)
+        return self._escribir_sin_pisar(f"{numero_factura}_response", response_bytes)
 
     def guardar_pdf(self, pdf_bytes: bytes, numero_factura: str) -> str:
         """Guarda el PDF de representación gráfica. Retorna la ruta absoluta. (Fase 2)"""

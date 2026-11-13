@@ -30,11 +30,13 @@ app_dir = Path(__file__).parent.parent
 if str(app_dir) not in sys.path:
     sys.path.insert(0, str(app_dir))
 
+from lxml import etree
+
 from tasks.celery_app import celery_app
 from database import get_db_cursor
 from services.xml_builder import XMLBuilder, desglosar_linea
 from services.signer import FirmadorDIAN
-from services.dian_client import DIANClient
+from services.dian_client import DIANClient, es_documento_ya_procesado
 from services.storage import StorageManager
 from utils.cufe import calcular_cufe, CLAVE_TECNICA_HABILITACION
 from utils.encryption import descifrar
@@ -43,6 +45,116 @@ logger = logging.getLogger(__name__)
 
 # Backoff entre reintentos: 1 min, 5 min, 15 min
 RETRY_DELAYS = [60, 300, 900]
+
+# Datos del emisor que la factura de PRODUCCIÓN no puede inventar. Antes, si
+# faltaban, el XML salía con teléfono 0000000, correo genérico, Bogotá o la
+# clave técnica de habilitación.
+REQUERIDOS_PRODUCCION = {
+    'software_id':         'Software ID',
+    'software_pin':        'PIN del software',
+    'clave_tecnica':       'clave técnica',
+    'prefijo':             'prefijo',
+    'resolucion_dian':     'número de resolución',
+    'resolucion_desde':    'rango desde',
+    'resolucion_hasta':    'rango hasta',
+    'resolucion_vigencia': 'vigencia de la resolución',
+    'direccion':           'dirección',
+    'municipio_codigo':    'código del municipio',
+    'municipio_nombre':    'municipio',
+    'departamento_codigo': 'código del departamento',
+    'departamento_nombre': 'departamento',
+    'email':               'correo',
+    'telefono':            'teléfono',
+}
+
+_NS_CBC = 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2'
+
+
+class NoReintentar(Exception):
+    """Falla que un reintento no arregla (falta configuración o se agotó la
+    resolución). La factura queda en ERROR con el motivo, sin gastar número ni
+    volver a intentarlo sola."""
+
+
+def _faltantes_produccion(tenant: dict) -> list:
+    return [nombre for campo, nombre in REQUERIDOS_PRODUCCION.items()
+            if tenant.get(campo) in (None, '')]
+
+
+def _tomar_consecutivo(tenant_id: str) -> int:
+    """Siguiente número de la resolución, solo si cabe en ella.
+
+    El incremento y las comprobaciones van en UN solo UPDATE: dos workers no
+    pueden saltarse el tope, y si el número no cabe no se gasta. Antes se usaba
+    `siguiente_consecutivo()`, que solo sumaba 1: al pasar el rango o vencer la
+    resolución, todas las facturas salían rechazadas y quemaban números.
+    """
+    with get_db_cursor() as cur:
+        cur.execute(
+            """UPDATE tenants
+                  SET consecutivo_actual = consecutivo_actual + 1
+                WHERE id = %s AND activo = TRUE
+                  AND (resolucion_hasta IS NULL OR consecutivo_actual + 1 <= resolucion_hasta)
+                  AND (resolucion_desde IS NULL OR consecutivo_actual + 1 >= resolucion_desde)
+                  AND (resolucion_vigencia IS NULL
+                       OR resolucion_vigencia >= (NOW() AT TIME ZONE 'America/Bogota')::date)
+            RETURNING consecutivo_actual""",
+            (tenant_id,)
+        )
+        fila = cur.fetchone()
+    if fila:
+        return fila[0]
+
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute(
+            """SELECT activo, consecutivo_actual, resolucion_desde, resolucion_hasta,
+                      resolucion_vigencia,
+                      (NOW() AT TIME ZONE 'America/Bogota')::date AS hoy
+                 FROM tenants WHERE id = %s""",
+            (tenant_id,)
+        )
+        t = cur.fetchone()
+    if not t or not t['activo']:
+        raise NoReintentar('El emisor no existe o está inactivo.')
+    siguiente = (t['consecutivo_actual'] or 0) + 1
+    if t['resolucion_vigencia'] and t['resolucion_vigencia'] < t['hoy']:
+        raise NoReintentar(
+            f"La resolución de facturación venció el {t['resolucion_vigencia']}. "
+            "Carga la nueva resolución antes de seguir facturando.")
+    if t['resolucion_hasta'] is not None and siguiente > t['resolucion_hasta']:
+        raise NoReintentar(
+            f"Se agotó el rango autorizado (hasta {t['resolucion_hasta']}). "
+            "Solicita una nueva resolución a la DIAN y cárgala en el portal.")
+    raise NoReintentar(
+        f"El siguiente número ({siguiente}) está por debajo del rango autorizado "
+        f"(desde {t['resolucion_desde']}). Revisa el consecutivo en el portal.")
+
+
+def _xml_firmado_previo(row: dict, numero_factura: str):
+    """El XML firmado de un intento anterior, si existe y corresponde a esta factura.
+
+    Se reenvía tal cual: mismo número, fecha, hora y CUFE. Antes cada reintento
+    calculaba otra hora y otro CUFE con el mismo número; si el primer envío sí
+    había llegado, la DIAN rechazaba el segundo y una factura válida quedaba
+    registrada como rechazada.
+    Retorna (ruta, bytes, fecha, hora) o None.
+    """
+    ruta = (row.get('xml_path') or '').strip()
+    cufe = (row.get('cufe') or '').strip()
+    if not (numero_factura and ruta and cufe):
+        return None
+    path = Path(ruta)
+    if not path.is_file():
+        return None
+    contenido = path.read_bytes()
+    try:
+        raiz = etree.fromstring(contenido)
+    except etree.XMLSyntaxError:
+        return None
+    hijo = lambda tag: (raiz.findtext(f'{{{_NS_CBC}}}{tag}') or '').strip()
+    if hijo('ID') != numero_factura or hijo('UUID') != cufe:
+        return None
+    return ruta, contenido, hijo('IssueDate'), hijo('IssueTime')
 
 
 @celery_app.task(
@@ -71,7 +183,8 @@ def procesar_factura(self, factura_id: str):
                        intentos = intentos + 1
                    WHERE id = %s
                      AND estado IN ('PENDIENTE', 'ERROR')
-                   RETURNING tenant_id, datos_json, intentos, numero_factura""",
+                   RETURNING tenant_id, datos_json, intentos, numero_factura,
+                             xml_path, cufe, zip_key""",
                 (factura_id,)
             )
             row = cur.fetchone()
@@ -106,19 +219,28 @@ def procesar_factura(self, factura_id: str):
             )
 
         cert_password = descifrar(tenant['cert_password_enc'])
+        ambiente      = tenant.get('ambiente', 'habilitacion')
+
+        # ── Paso 2b: ¿Hay un XML firmado de un intento anterior? ───────────────
+        # Si lo hay, se reenvía ese mismo (mismo CUFE) y se saltan los pasos 3-7.
+        numero_factura = (row.get('numero_factura') or '').strip()
+        previo = _xml_firmado_previo(row, numero_factura)
+
+        # En producción no se numera ni se firma con datos incompletos: el
+        # número no se gasta y la factura queda en ERROR con lo que falta.
+        if not previo and ambiente == 'produccion':
+            faltan = _faltantes_produccion(tenant)
+            if faltan:
+                raise NoReintentar('Faltan datos del emisor para facturar en producción: '
+                                   + ', '.join(faltan) + '.')
 
         # ── Paso 3: Consecutivo atómico (una sola vez por factura) ─────────────
         # Un reintento NO puede tomar otro consecutivo: dejaría un hueco en el
         # rango autorizado por la DIAN y, si el envío anterior sí llegó, crearía
         # un DUPLICADO con distinto número. Se persiste apenas se obtiene, así
-        # que cualquier intento posterior reutiliza el mismo. Si la DIAN ya lo
-        # recibió, rechazará el número repetido — que es el resultado seguro:
-        # el problema se hace visible en vez de facturar dos veces.
-        numero_factura = (row.get('numero_factura') or '').strip()
+        # que cualquier intento posterior reutiliza el mismo.
         if not numero_factura:
-            with get_db_cursor() as cur:
-                cur.execute("SELECT siguiente_consecutivo(%s)", (tenant_id,))
-                consecutivo = cur.fetchone()[0]
+            consecutivo    = _tomar_consecutivo(tenant_id)
             prefijo        = tenant.get('prefijo') or ''
             numero_factura = f"{prefijo}{consecutivo}"
             with get_db_cursor() as cur:
@@ -132,78 +254,95 @@ def procesar_factura(self, factura_id: str):
         else:
             logger.info(f"Factura {factura_id} reutiliza consecutivo {numero_factura}")
 
-        # ── Paso 4: Fecha de emisión y CUFE ────────────────────────────────────
-        now            = datetime.now(TZ_CO)
-        fecha_emision  = now.strftime('%Y-%m-%d')
-        hora_emision   = now.strftime('%H:%M:%S-05:00')
-
-        # Calcular totales para el CUFE
-        from decimal import Decimal, ROUND_HALF_UP
-
-        def _d(v):
-            return Decimal(str(v)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-
-        # Responsable de IVA (regimen 48) vs No responsable (49). El desglose se
-        # delega a xml_builder.desglosar_linea: era una copia paralela de la
-        # misma fórmula y cualquier divergencia hace que el CUFE no calce con el
-        # XML (rechazo de la DIAN).
-        responsable_iva = str(tenant.get('regimen_codigo') or '48') == '48'
-        subtotal  = Decimal('0')
-        total_iva = Decimal('0')
-        for item in datos.get('items', []):
-            ln = desglosar_linea(item, responsable_iva)
-            subtotal  += ln['base']
-            total_iva += ln['iva']
-
-        total = subtotal + total_iva
-
-        ambiente       = tenant.get('ambiente', 'habilitacion')
-        clave_tecnica  = tenant.get('clave_tecnica') or CLAVE_TECNICA_HABILITACION
-        tipo_amb       = '2' if ambiente == 'habilitacion' else '1'
+        # En producción no hay respaldo con la clave de habilitación: ya se
+        # comprobó arriba que la clave real está cargada.
+        clave_tecnica  = (tenant.get('clave_tecnica')
+                          or (CLAVE_TECNICA_HABILITACION if ambiente == 'habilitacion' else ''))
         nit_emisor     = tenant.get('nit', '')
-        num_doc_recep  = datos.get('cliente', {}).get('numero_documento', '0')
+        storage        = StorageManager(tenant_id)
 
-        # CUFE (factura) usa la CLAVE TÉCNICA; CUDE (notas) usa el PIN del software.
-        tipo_doc_actual = datos.get('tipo_documento', 'factura')
-        clave_cufe = (tenant.get('software_pin') or clave_tecnica
-                      if tipo_doc_actual in ('nota_credito', 'nota_debito')
-                      else clave_tecnica)
+        if previo:
+            # ── Pasos 4-7 ya hechos en un intento anterior ─────────────────────
+            xml_path, xml_firmado, fecha_emision, hora_emision = previo
+            cufe = row['cufe'].strip()
+            _registrar_evento(
+                factura_id, 'REUTILIZA',
+                f"Se reenvía el mismo XML firmado del intento anterior "
+                f"({numero_factura}, {fecha_emision} {hora_emision}); el CUFE no cambia.")
+            logger.info(f"Factura {factura_id} reutiliza su XML firmado ({numero_factura})")
+        else:
+            # ── Paso 4: Fecha de emisión y CUFE ────────────────────────────────
+            now            = datetime.now(TZ_CO)
+            fecha_emision  = now.strftime('%Y-%m-%d')
+            hora_emision   = now.strftime('%H:%M:%S-05:00')
 
-        cufe = calcular_cufe(
-            numero_factura  = numero_factura,
-            fecha_factura   = fecha_emision,
-            hora_factura    = hora_emision,
-            valor_factura   = float(subtotal),
-            cod_impuesto1   = '01',
-            valor_impuesto1 = float(total_iva),
-            cod_impuesto2   = '04',   # INC (impuesto nacional al consumo)
-            valor_impuesto2 = 0.0,
-            cod_impuesto3   = '03',   # ICA
-            valor_impuesto3 = 0.0,
-            valor_total     = float(total),
-            nit_emisor      = nit_emisor,
-            num_doc_receptor= num_doc_recep,
-            clave_tecnica   = clave_cufe,
-            ambiente        = tipo_amb,
-        )
+            # Calcular totales para el CUFE
+            from decimal import Decimal
 
-        logger.info(f"Número de factura: {numero_factura}, CUFE: {cufe[:20]}...")
+            # Responsable de IVA (regimen 48) vs No responsable (49). El desglose se
+            # delega a xml_builder.desglosar_linea: era una copia paralela de la
+            # misma fórmula y cualquier divergencia hace que el CUFE no calce con el
+            # XML (rechazo de la DIAN).
+            responsable_iva = str(tenant.get('regimen_codigo') or '48') == '48'
+            subtotal  = Decimal('0')
+            total_iva = Decimal('0')
+            for item in datos.get('items', []):
+                ln = desglosar_linea(item, responsable_iva)
+                subtotal  += ln['base']
+                total_iva += ln['iva']
 
-        # ── Paso 5: Construir XML ──────────────────────────────────────────────
-        builder   = XMLBuilder(tenant, datos, numero_factura, cufe,
-                               fecha=fecha_emision, hora=hora_emision)
-        xml_bytes = builder.build()
+            total = subtotal + total_iva
 
-        # ── Paso 6: Firmar ─────────────────────────────────────────────────────
-        firmador    = FirmadorDIAN(tenant['cert_path'], cert_password)
-        xml_firmado = firmador.firmar(xml_bytes)
+            tipo_amb       = '2' if ambiente == 'habilitacion' else '1'
+            num_doc_recep  = datos.get('cliente', {}).get('numero_documento', '0')
 
-        _registrar_evento(factura_id, 'FIRMADA', f"XML firmado, {len(xml_firmado)} bytes")
-        logger.info(f"XML firmado para {factura_id}")
+            # CUFE (factura) usa la CLAVE TÉCNICA; CUDE (notas) usa el PIN del software.
+            tipo_doc_actual = datos.get('tipo_documento', 'factura')
+            clave_cufe = (tenant.get('software_pin') or clave_tecnica
+                          if tipo_doc_actual in ('nota_credito', 'nota_debito')
+                          else clave_tecnica)
 
-        # ── Paso 7: Guardar XML ────────────────────────────────────────────────
-        storage  = StorageManager(tenant_id)
-        xml_path = storage.guardar_xml(xml_firmado, numero_factura)
+            cufe = calcular_cufe(
+                numero_factura  = numero_factura,
+                fecha_factura   = fecha_emision,
+                hora_factura    = hora_emision,
+                valor_factura   = float(subtotal),
+                cod_impuesto1   = '01',
+                valor_impuesto1 = float(total_iva),
+                cod_impuesto2   = '04',   # INC (impuesto nacional al consumo)
+                valor_impuesto2 = 0.0,
+                cod_impuesto3   = '03',   # ICA
+                valor_impuesto3 = 0.0,
+                valor_total     = float(total),
+                nit_emisor      = nit_emisor,
+                num_doc_receptor= num_doc_recep,
+                clave_tecnica   = clave_cufe,
+                ambiente        = tipo_amb,
+            )
+
+            logger.info(f"Número de factura: {numero_factura}, CUFE: {cufe[:20]}...")
+
+            # ── Paso 5: Construir XML ──────────────────────────────────────────
+            builder   = XMLBuilder(tenant, datos, numero_factura, cufe,
+                                   fecha=fecha_emision, hora=hora_emision)
+            xml_bytes = builder.build()
+
+            # ── Paso 6: Firmar ─────────────────────────────────────────────────
+            firmador    = FirmadorDIAN(tenant['cert_path'], cert_password)
+            xml_firmado = firmador.firmar(xml_bytes)
+
+            _registrar_evento(factura_id, 'FIRMADA', f"XML firmado, {len(xml_firmado)} bytes")
+            logger.info(f"XML firmado para {factura_id}")
+
+            # ── Paso 7: Guardar XML y dejarlo registrado ANTES de enviar ───────
+            # Así un reintento encuentra este mismo XML (paso 2b) y no inventa
+            # otra hora ni otro CUFE para el mismo número.
+            xml_path = storage.guardar_xml(xml_firmado, numero_factura)
+            with get_db_cursor() as cur:
+                cur.execute(
+                    "UPDATE facturas SET cufe = %s, xml_path = %s WHERE id = %s",
+                    (cufe, xml_path, factura_id)
+                )
 
         # ── Paso 8: Enviar a DIAN ─────────────────────────────────────────────
         _registrar_evento(factura_id, 'ENVIADA',
@@ -223,15 +362,23 @@ def procesar_factura(self, factura_id: str):
             # SET DE PRUEBAS: SendTestSetAsync con el TestSetId (la DIAN solo cuenta
             # los documentos del set si se envían así). Es asíncrono → ZipKey y luego
             # GetStatusZip para el veredicto.
-            envio   = dian.enviar_test_set(xml_firmado, numero_factura, test_set_id)
-            zip_key = envio.get('zip_key')
-            with get_db_cursor() as cur:
-                cur.execute("UPDATE facturas SET zip_key=%s WHERE id=%s", (zip_key, factura_id))
-            _registrar_evento(factura_id, 'ENVIADA',
-                              f"Set de pruebas (TestSetId). ZipKey={zip_key or '—'}")
-            if not zip_key:
-                raise ValueError("DIAN no devolvió ZipKey en SendTestSetAsync: "
-                                 + '; '.join(envio.get('errors') or ['sin detalle']))
+            # Si el mismo XML ya salió con su ZipKey, solo se consulta el
+            # resultado: reenviarlo sumaría un documento repetido al set.
+            zip_key = (row.get('zip_key') or '').strip() if previo else ''
+            if zip_key:
+                _registrar_evento(factura_id, 'CONSULTA',
+                                  f"Ya se había enviado (ZipKey={zip_key}): se consulta "
+                                  "el resultado, no se reenvía.")
+            else:
+                envio   = dian.enviar_test_set(xml_firmado, numero_factura, test_set_id)
+                zip_key = envio.get('zip_key')
+                with get_db_cursor() as cur:
+                    cur.execute("UPDATE facturas SET zip_key=%s WHERE id=%s", (zip_key, factura_id))
+                _registrar_evento(factura_id, 'ENVIADA',
+                                  f"Set de pruebas (TestSetId). ZipKey={zip_key or '—'}")
+                if not zip_key:
+                    raise ValueError("DIAN no devolvió ZipKey en SendTestSetAsync: "
+                                     + '; '.join(envio.get('errors') or ['sin detalle']))
             resultado = None
             for _ in range(10):
                 time.sleep(6)
@@ -256,6 +403,36 @@ def procesar_factura(self, factura_id: str):
                 numero_factura = numero_factura,
                 token_dian     = tenant.get('token_dian'),
             )
+
+        # ── Paso 8b: ¿La DIAN ya tenía este documento? (Regla 90) ─────────────
+        # Pasa cuando un envío anterior sí llegó (p. ej., la DIAN respondió
+        # tarde y saltó el timeout). Antes la factura quedaba RECHAZADA aunque
+        # en la DIAN fuera válida. Ahora se consulta su estado por CUFE.
+        if not resultado.get('is_valid') and es_documento_ya_procesado(resultado):
+            storage.guardar_response(resultado['raw_xml'], numero_factura)
+            try:
+                consulta = dian.consultar_por_cufe(cufe)
+            except Exception as e:
+                consulta = {'is_valid': False, 'errors': [f"Consulta fallida: {e}"]}
+            if consulta.get('is_valid'):
+                _registrar_evento(factura_id, 'CONSULTA',
+                                  'La DIAN ya tenía este documento de un envío anterior '
+                                  'y lo tiene ACEPTADO.')
+                resultado = consulta
+            else:
+                mensaje = ('La DIAN ya tiene este documento de un envío anterior, pero no '
+                           'se pudo confirmar si lo aceptó. No se reenvió otro: revisa su '
+                           'estado en el portal de la DIAN.')
+                with get_db_cursor() as cur:
+                    cur.execute(
+                        """UPDATE facturas SET estado = 'ERROR', error_mensaje = %s,
+                                  actualizado_en = NOW() WHERE id = %s""",
+                        (mensaje, factura_id))
+                detalle = '; '.join(consulta.get('errors') or [])[:300]
+                _registrar_evento(factura_id, 'REVISION',
+                                  mensaje + (f" Detalle: {detalle}" if detalle else ''))
+                return {'status': 'REVISION', 'factura_id': factura_id,
+                        'numero_factura': numero_factura, 'cufe': cufe}
 
         # ── Paso 9: Guardar ApplicationResponse ────────────────────────────────
         response_path = storage.guardar_response(
@@ -306,6 +483,22 @@ def procesar_factura(self, factura_id: str):
             'numero_factura':  numero_factura,
             'cufe':            cufe_final,
         }
+
+    except NoReintentar as exc:
+        # Falta configuración o se agotó la resolución: reintentar no lo arregla.
+        logger.error(f"Factura {factura_id} no se puede procesar: {exc}")
+        _registrar_evento(factura_id, 'ERROR', str(exc)[:500])
+        try:
+            with get_db_cursor() as cur:
+                cur.execute(
+                    """UPDATE facturas
+                       SET estado = 'ERROR', error_mensaje = %s, actualizado_en = NOW()
+                       WHERE id = %s""",
+                    (str(exc)[:500], factura_id)
+                )
+        except Exception as db_err:
+            logger.error(f"No se pudo actualizar estado ERROR: {db_err}")
+        return {'status': 'error', 'factura_id': factura_id, 'error': str(exc)}
 
     except Exception as exc:
         logger.error(f"Error procesando factura {factura_id} (intento {retry_num}): {exc}")

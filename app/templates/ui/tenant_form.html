@@ -15,9 +15,12 @@
   <i class="bi bi-key-fill me-2 fs-5"></i>
   <div>
     <strong>API Key</strong> — Este valor solo se mostró una vez al crear el tenant.
-    Si lo perdiste, <a href="{{ url_for('ui.tenant_regenerar_key', tenant_id=tenant.id) }}"
-       onclick="return confirm('¿Regenerar el API Key? El anterior quedará inválido.')">
-       regenerar API Key</a>.
+    Si lo perdiste,
+    <form method="POST" action="{{ url_for('ui.tenant_regenerar_key', tenant_id=tenant.id) }}"
+          class="d-inline" onsubmit="return confirm('¿Regenerar el API Key? El anterior quedará inválido.')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-link alert-link p-0 align-baseline">regenerar API Key</button>
+    </form>.
   </div>
 </div>
 {% endif %}
@@ -38,12 +41,14 @@
       {% if tenant.ambiente == 'produccion' %}
       <form method="POST" action="{{ url_for('ui.cambiar_ambiente', tenant_id=tenant.id) }}"
             onsubmit="return confirm('¿Cambiar a PRUEBAS (habilitación)? Se guardará tu configuración de producción y se cargará la de pruebas. Las facturas dejarán de tener validez legal.')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="destino" value="habilitacion">
         <button class="btn btn-outline-warning"><i class="bi bi-arrow-left-right me-1"></i>Cambiar a Pruebas</button>
       </form>
       {% else %}
       <form method="POST" action="{{ url_for('ui.cambiar_ambiente', tenant_id=tenant.id) }}"
             onsubmit="return confirm('¿Pasar a PRODUCCIÓN? A partir de aquí las facturas son REALES y con validez legal. Asegúrate de tener la resolución y credenciales de producción.')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="destino" value="produccion">
         <button class="btn btn-success"><i class="bi bi-broadcast me-1"></i>Pasar a Producción</button>
       </form>
@@ -71,6 +76,7 @@
       </div>
       <div class="card-body">
         <form method="POST" action="{{ url_for('ui.tenant_guardar', tenant_id=tenant.id if tenant else None) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
           <div class="row g-3">
             <div class="col-12">
@@ -287,6 +293,7 @@
           Completos, se habilita el botón “Pasar a Producción”.</p>
         {% set prod = (tenant.ambientes or {}).get('produccion', {}) %}
         <form method="POST" action="{{ url_for('ui.guardar_produccion', tenant_id=tenant.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="row g-2">
             <div class="col-12"><label class="form-label small mb-0">Software ID</label>
               <input name="software_id" class="form-control form-control-sm font-monospace" value="{{ prod.get('software_id') or '' }}"></div>
@@ -334,6 +341,7 @@
         {% endif %}
         <form method="POST" enctype="multipart/form-data"
               action="{{ url_for('ui.tenant_subir_cert', tenant_id=tenant.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="mb-2">
             <label class="form-label small fw-semibold">Archivo .p12</label>
             <input type="file" name="certificado" accept=".p12,.pfx" class="form-control form-control-sm" required>
@@ -383,6 +391,7 @@
           <i class="bi bi-lock-fill"></i>
           <div>Cuenta bloqueada hasta <strong>{{ tenant.portal_bloqueado_hasta }}</strong></div>
           <form method="POST" action="{{ url_for('ui.tenant_guardar_portal', tenant_id=tenant.id) }}" class="ms-auto">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <input type="hidden" name="desbloquear_portal" value="1">
             <input type="hidden" name="portal_activo" value="{{ 'true' if tenant.portal_activo else 'false' }}">
             <button class="btn btn-sm btn-danger">
@@ -392,6 +401,7 @@
         </div>
         {% endif %}
         <form method="POST" action="{{ url_for('ui.tenant_guardar_portal', tenant_id=tenant.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="mb-3">
             <label class="form-label small fw-semibold">Usuario</label>
             <input type="text" name="portal_usuario" class="form-control form-control-sm font-monospace"
