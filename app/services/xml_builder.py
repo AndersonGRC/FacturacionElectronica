@@ -12,6 +12,7 @@ no-responsable de IVA, persona natural y jurídica.
 """
 
 import hashlib
+import re
 from lxml import etree
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -59,6 +60,87 @@ TIPO_CFG = {
 
 def _d(val) -> Decimal:
     return Decimal(str(val)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+# Departamentos (DIVIPOLA) y capitales. La lista completa de municipios está en
+# la caja de herramientas de la DIAN; un nombre que no calce solo da
+# notificación (FAK10/FAJ10), pero antes TODO comprador salía «Bogotá».
+DEPARTAMENTOS = {
+    '05': 'Antioquia', '08': 'Atlántico', '11': 'Bogotá', '13': 'Bolívar', '15': 'Boyacá',
+    '17': 'Caldas', '18': 'Caquetá', '19': 'Cauca', '20': 'Cesar', '23': 'Córdoba',
+    '25': 'Cundinamarca', '27': 'Chocó', '41': 'Huila', '44': 'La Guajira', '47': 'Magdalena',
+    '50': 'Meta', '52': 'Nariño', '54': 'Norte de Santander', '63': 'Quindío', '66': 'Risaralda',
+    '68': 'Santander', '70': 'Sucre', '73': 'Tolima', '76': 'Valle del Cauca', '81': 'Arauca',
+    '85': 'Casanare', '86': 'Putumayo',
+    '88': 'Archipiélago de San Andrés, Providencia y Santa Catalina',
+    '91': 'Amazonas', '94': 'Guainía', '95': 'Guaviare', '97': 'Vaupés', '99': 'Vichada',
+}
+MUNICIPIOS = {
+    '05001': 'Medellín', '08001': 'Barranquilla', '11001': 'Bogotá, D.C.', '13001': 'Cartagena de Indias',
+    '15001': 'Tunja', '17001': 'Manizales', '18001': 'Florencia', '19001': 'Popayán',
+    '20001': 'Valledupar', '23001': 'Montería', '27001': 'Quibdó', '41001': 'Neiva',
+    '44001': 'Riohacha', '47001': 'Santa Marta', '50001': 'Villavicencio', '52001': 'Pasto',
+    '54001': 'San José de Cúcuta', '63001': 'Armenia', '66001': 'Pereira', '68001': 'Bucaramanga',
+    '70001': 'Sincelejo', '73001': 'Ibagué', '76001': 'Cali', '81001': 'Arauca', '85001': 'Yopal',
+    '86001': 'Mocoa', '88001': 'San Andrés', '91001': 'Leticia', '94001': 'Inírida',
+    '95001': 'San José del Guaviare', '97001': 'Mitú', '99001': 'Puerto Carreño',
+    '25754': 'Soacha', '05088': 'Bello', '05266': 'Envigado', '05360': 'Itagüí',
+    '76520': 'Palmira', '68276': 'Floridablanca', '25175': 'Chía', '25899': 'Zipaquirá',
+}
+
+_PESOS_DV = (3, 7, 13, 17, 19, 23, 29, 37, 41, 43, 47, 53, 59, 67, 71)
+_DOC_NUMERICOS = ('11', '12', '13', '31')        # RC, TI, CC, NIT
+
+
+def digito_verificacion(nit) -> str:
+    """Dígito de verificación de un NIT (algoritmo de la DIAN, módulo 11)."""
+    digitos = re.sub(r'\D', '', str(nit or ''))
+    if not digitos:
+        return '0'
+    suma = sum(int(d) * p for d, p in zip(reversed(digitos), _PESOS_DV))
+    resto = suma % 11
+    return str(resto if resto in (0, 1) else 11 - resto)
+
+
+def documento_adquiriente(cliente: dict):
+    """(número, dv, código) del comprador.
+
+    El mismo número va al XML y al CUFE (NumAdq): si difieren, la DIAN rechaza.
+    Un NIT escrito «900123456-7» se separa; el DV se calcula siempre, porque la
+    DIAN rechaza el documento si falta o no corresponde (FAK24, FAK25, FAK47).
+    """
+    cliente = cliente or {}
+    codigo = TIPO_DOC_SCHEME.get(str(cliente.get('tipo_documento', 'CC')).upper(), '13')
+    crudo = str(cliente.get('numero_documento') or '').strip()
+    if codigo == '31':
+        numero = re.sub(r'\D', '', crudo.split('-')[0])
+        return numero, digito_verificacion(numero), codigo
+    if codigo in _DOC_NUMERICOS:
+        limpio = re.sub(r'[\s.]', '', crudo)
+        return (limpio if limpio.isdigit() else crudo), None, codigo
+    return crudo.replace(' ', ''), None, codigo
+
+
+def es_responsable_iva(tenant: dict, datos: dict = None) -> bool:
+    """Régimen 48 = responsable de IVA. Fuente única para XML, CUFE y PDF.
+
+    `prueba_responsable_iva` (solo en habilitación) deja probar ante la DIAN las
+    tarifas de IVA con un emisor que en la vida real no cobra IVA.
+    """
+    if (datos or {}).get('prueba_responsable_iva') \
+            and (tenant.get('ambiente') or 'habilitacion') == 'habilitacion':
+        return True
+    return str(tenant.get('regimen_codigo') or '48') == '48'
+
+
+def municipio(codigo, nombre=None, tenant: dict = None):
+    """(código, ciudad, código depto, depto) a partir del código DIVIPOLA."""
+    cod = re.sub(r'\D', '', str(codigo or ''))
+    cod = cod.zfill(5)[:5] if cod else '11001'
+    ciudad = (nombre or '').strip() or MUNICIPIOS.get(cod)
+    if not ciudad and tenant and str(tenant.get('municipio_codigo') or '') == cod:
+        ciudad = tenant.get('municipio_nombre')
+    return cod, ciudad or 'No informado', cod[:2], DEPARTAMENTOS.get(cod[:2], 'No informado')
 
 
 def desglosar_linea(item: dict, responsable_iva: bool) -> dict:
@@ -145,7 +227,7 @@ class XMLBuilder:
         self.cfg = TIPO_CFG[self.tipo]
         self.doc_ref  = datos.get('documento_referencia', {}) or {}
         self.concepto = datos.get('concepto_nota', {}) or {}
-        self.responsable_iva = str(tenant.get('regimen_codigo') or '48') == '48'
+        self.responsable_iva = es_responsable_iva(tenant, datos)
         self.totales = self._calcular_totales()
 
     # ── Entrada pública ───────────────────────────────────────────────────────
@@ -301,7 +383,11 @@ class XMLBuilder:
         dep_cod = self._t('departamento_codigo', '11'); dep_nom = self._t('departamento_nombre', 'Bogotá')
         direccion = self._t('direccion', 'No informado')
         razon = self._t('razon_social'); nit = self._t('nit'); dv = str(self._t('digito_verificacion', '0'))
-        responsabilidad = self._t('responsabilidad_fiscal', 'O-13'); regimen = self._t('regimen_codigo', '48')
+        responsabilidad = self._t('responsabilidad_fiscal', 'O-13')
+        # El régimen sale del mismo cálculo que el IVA de las líneas: un no
+        # responsable (49) no declara el tributo IVA sino «ZZ No aplica».
+        regimen = '48' if self.responsable_iva else '49'
+        tributo = ('01', 'IVA') if self.responsable_iva else ('ZZ', 'No aplica')
 
         _cbc(_cac(party, 'PartyName'), 'Name', razon)
         self._add_party_address(_cac(party, 'PhysicalLocation'), 'Address',
@@ -313,7 +399,7 @@ class XMLBuilder:
              schemeID=dv, schemeName='31')
         _cbc(pts, 'TaxLevelCode', responsabilidad, listName=regimen)
         self._add_party_address(pts, 'RegistrationAddress', muni_cod, muni_nom, dep_cod, dep_nom, direccion)
-        ts = _cac(pts, 'TaxScheme'); _cbc(ts, 'ID', '01'); _cbc(ts, 'Name', 'IVA')
+        ts = _cac(pts, 'TaxScheme'); _cbc(ts, 'ID', tributo[0]); _cbc(ts, 'Name', tributo[1])
 
         ple = _cac(party, 'PartyLegalEntity')
         _cbc(ple, 'RegistrationName', razon)
@@ -332,29 +418,48 @@ class XMLBuilder:
         _cbc(customer, 'AdditionalAccountID', '2' if tipo_persona == 'natural' else '1')
         party = _cac(customer, 'Party')
 
-        tipo_doc = str(cliente.get('tipo_documento', 'CC')).upper()
-        doc_code = TIPO_DOC_SCHEME.get(tipo_doc, '13')
+        numero_doc, dv, doc_code = documento_adquiriente(cliente)
         id_attrs = {'schemeAgencyID': '195', 'schemeAgencyName': DIAN_AGENCY, 'schemeName': doc_code}
+        if dv is not None:
+            id_attrs['schemeID'] = dv            # NIT: DV obligatorio (FAK24/FAK47)
+        nombre = cliente.get('nombre') or 'Consumidor Final'
 
-        _cbc(_cac(party, 'PartyIdentification'), 'ID', cliente.get('numero_documento', ''), **id_attrs)
-        _cbc(_cac(party, 'PartyName'), 'Name', cliente.get('nombre', 'Consumidor Final'))
+        # Responsabilidades y régimen del comprador si se informan (empresa
+        # responsable de IVA, gran contribuyente…); si no, «no aplica».
+        resp = cliente.get('responsabilidades') or cliente.get('responsabilidad_fiscal') or 'R-99-PN'
+        if isinstance(resp, (list, tuple)):
+            resp = ';'.join(str(r).strip() for r in resp if str(r).strip()) or 'R-99-PN'
+        regimen = str(cliente.get('regimen') or cliente.get('regimen_codigo') or '49')
+        regimen = regimen if regimen in ('48', '49') else '49'
+        tributo = ('01', 'IVA') if regimen == '48' else ('ZZ', 'No aplica')
+
+        cod, ciudad, dep_cod, dep_nom = municipio(cliente.get('municipio_codigo') or '11001',
+                                                  cliente.get('municipio_nombre'), self.tenant)
+
+        _cbc(_cac(party, 'PartyIdentification'), 'ID', numero_doc, **id_attrs)
+        _cbc(_cac(party, 'PartyName'), 'Name', nombre)
         self._add_party_address(_cac(party, 'PhysicalLocation'), 'Address',
-                                cliente.get('municipio_codigo', '11001'), 'Bogotá, D.C.', '11', 'Bogotá',
-                                cliente.get('direccion', 'No informado'))
+                                cod, ciudad, dep_cod, dep_nom,
+                                cliente.get('direccion') or 'No informado')
 
         pts = _cac(party, 'PartyTaxScheme')
-        _cbc(pts, 'RegistrationName', cliente.get('nombre', 'Consumidor Final'))
-        _cbc(pts, 'CompanyID', cliente.get('numero_documento', ''), **id_attrs)
-        _cbc(pts, 'TaxLevelCode', 'R-99-PN', listName='49')
-        ts = _cac(pts, 'TaxScheme'); _cbc(ts, 'ID', 'ZZ'); _cbc(ts, 'Name', 'No aplica')
+        _cbc(pts, 'RegistrationName', nombre)
+        _cbc(pts, 'CompanyID', numero_doc, **id_attrs)
+        _cbc(pts, 'TaxLevelCode', str(resp), listName=regimen)
+        ts = _cac(pts, 'TaxScheme'); _cbc(ts, 'ID', tributo[0]); _cbc(ts, 'Name', tributo[1])
 
         ple = _cac(party, 'PartyLegalEntity')
-        _cbc(ple, 'RegistrationName', cliente.get('nombre', 'Consumidor Final'))
-        _cbc(ple, 'CompanyID', cliente.get('numero_documento', ''), **id_attrs)
+        _cbc(ple, 'RegistrationName', nombre)
+        _cbc(ple, 'CompanyID', numero_doc, **id_attrs)
 
+        # FAK55: sin correo del comprador la DIAN rechaza. Si no lo dio, va el
+        # del emisor (la entrega por correo no usa este campo: queda «sin correo»).
+        correo = (cliente.get('email') or '').strip()
+        if '@' not in correo:
+            correo = self._t('email', '')
         contact = _cac(party, 'Contact')
-        _cbc(contact, 'Telephone', cliente.get('telefono', '0000000'))
-        _cbc(contact, 'ElectronicMail', cliente.get('email', ''))
+        _cbc(contact, 'Telephone', cliente.get('telefono') or '0000000')
+        _cbc(contact, 'ElectronicMail', correo)
 
     def _add_payment_means(self, root):
         p = _cac(root, 'PaymentMeans')
@@ -365,19 +470,38 @@ class XMLBuilder:
     # ── Impuestos / Totales ───────────────────────────────────────────────────
 
     def _add_tax_totals(self, root):
-        t = self.totales
-        percent = Decimal('19.00') if self.responsable_iva else Decimal('0.00')
-        self._tax_total_node(root, t['total_iva'], t['subtotal'], percent, '01', 'IVA')
+        """Un TaxTotal de IVA con un subtotal POR TARIFA (0, 5, 19 %).
 
-    def _tax_total_node(self, parent, tax_amount, taxable, percent, tax_id, tax_name):
+        Antes iba un único subtotal al 19 % con todo el IVA sumado: una factura
+        con productos al 5 % y al 19 % quedaba mal declarada.
+        """
+        por_tarifa = {}
+        for item in self.datos.get('items', []):
+            ln = desglosar_linea(item, self.responsable_iva)
+            base, iva = por_tarifa.get(ln['iva_pct'], (Decimal('0'), Decimal('0')))
+            por_tarifa[ln['iva_pct']] = (base + ln['base'], iva + ln['iva'])
+        if not por_tarifa:
+            por_tarifa[Decimal('0')] = (Decimal('0'), Decimal('0'))
+        grupos = [(_d(b), _d(i), _d(p)) for p, (b, i) in sorted(por_tarifa.items())]
+        self._tax_total_node(root, self.totales['total_iva'], grupos, '01', 'IVA')
+
+    def _tax_total_node(self, parent, tax_amount, grupos, tax_id, tax_name, percent=None):
+        """TaxTotal con uno o varios TaxSubtotal.
+
+        grupos: [(base, impuesto, porcentaje)]. Para una línea se puede pasar
+        la base en `grupos` y el porcentaje en `percent` (un solo subtotal).
+        """
+        if not isinstance(grupos, list):
+            grupos = [(grupos, tax_amount, percent)]
         tt = _cac(parent, 'TaxTotal')
         _cbc(tt, 'TaxAmount', str(_d(tax_amount)), currencyID='COP')
-        sub = _cac(tt, 'TaxSubtotal')
-        _cbc(sub, 'TaxableAmount', str(_d(taxable)), currencyID='COP')
-        _cbc(sub, 'TaxAmount', str(_d(tax_amount)), currencyID='COP')
-        cat = _cac(sub, 'TaxCategory')
-        _cbc(cat, 'Percent', str(percent))
-        sch = _cac(cat, 'TaxScheme'); _cbc(sch, 'ID', tax_id); _cbc(sch, 'Name', tax_name)
+        for base, impuesto, pct in grupos:
+            sub = _cac(tt, 'TaxSubtotal')
+            _cbc(sub, 'TaxableAmount', str(_d(base)), currencyID='COP')
+            _cbc(sub, 'TaxAmount', str(_d(impuesto)), currencyID='COP')
+            cat = _cac(sub, 'TaxCategory')
+            _cbc(cat, 'Percent', str(_d(pct)))
+            sch = _cac(cat, 'TaxScheme'); _cbc(sch, 'ID', tax_id); _cbc(sch, 'Name', tax_name)
 
     def _add_legal_totals(self, root):
         t = self.totales
@@ -424,7 +548,7 @@ class XMLBuilder:
                 _cbc(ac, 'MultiplierFactorNumeric', str(pct))
                 _cbc(ac, 'Amount', str(_d(ln['descuento'])), currencyID='COP')
                 _cbc(ac, 'BaseAmount', str(bruto), currencyID='COP')
-            self._tax_total_node(line, iva_val, base, iva_pct, '01', 'IVA')
+            self._tax_total_node(line, iva_val, base, '01', 'IVA', percent=iva_pct)
 
             item_el = _cac(line, 'Item')
             _cbc(item_el, 'Description', item.get('descripcion', ''))

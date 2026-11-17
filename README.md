@@ -39,7 +39,23 @@ Cubren: un reintento reenvía el mismo XML (mismo número, fecha y CUFE); la
 Regla 90 («procesado anteriormente») se resuelve consultando por CUFE; no se
 numera fuera del rango ni con la resolución vencida; producción exige los datos
 reales del emisor; el set de pruebas solo funciona en habilitación; todo POST
-del portal exige token.
+del portal exige token; la entrega al comprador (contenedor AttachedDocument,
+asunto y .zip del Anexo 1.9 numeral 9.1); el comprador con NIT lleva su DV; un
+subtotal de IVA por tarifa.
+
+## Entrega al comprador
+Al quedar ACEPTADO en producción, el documento se le envía al comprador desde el
+correo del propio negocio (portal → «Correo de entrega»; la contraseña se guarda
+cifrada con `FERNET_KEY`). Va un .zip con el contenedor electrónico
+(`services/contenedor.py`: el XML validado + la respuesta de la DIAN, firmado) y
+el PDF. En habilitación nunca se le escribe al comprador. Si el correo falla, el
+documento sigue aceptado: queda el evento y se reenvía desde su detalle.
+
+Requiere la columna `tenants.correo_entrega` (está en `schema.sql`):
+
+```
+sudo -u postgres psql -d facturacion_dian -c "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS correo_entrega JSONB DEFAULT '{}'::jsonb;"
+```
 
 ## Producción
 Corre en el mismo VPS del ecosistema (`/var/www/FacturacionDIAN`) con los

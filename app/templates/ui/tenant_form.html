@@ -23,6 +23,15 @@
     </form>.
   </div>
 </div>
+<div class="alert alert-light border d-flex align-items-center mb-4 small">
+  <i class="bi bi-envelope-paper me-2 fs-5"></i>
+  <div>
+    <strong>Correo de entrega:</strong> desde esta cuenta se le envía a cada comprador su documento
+    aceptado por la DIAN (XML y PDF en un .zip).
+  </div>
+  <a class="btn btn-sm btn-outline-primary ms-auto text-nowrap"
+     href="{{ url_for('ui.correo_entrega', tenant_id=tenant.id) }}">Configurar</a>
+</div>
 {% endif %}
 
 {% if tenant %}

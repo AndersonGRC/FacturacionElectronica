@@ -169,3 +169,39 @@ def test_la_api_no_cambia_el_ambiente(app, crear_tenant):
     r = c.put(f"/api/v1/admin/tenants/{t['id']}", headers={'X-Master-Key': LLAVE},
               json={'nombre': 'Renombrado'})
     assert r.status_code == 200
+
+
+# ── Avisos de certificado, resolución y rango (FE-17) ───────────────────────
+
+def test_avisos_de_certificado_resolucion_y_rango():
+    from datetime import date
+    from services.alertas import avisos
+    hoy = date(2026, 11, 15)
+    base = {'resolucion_desde': 1, 'resolucion_hasta': 100, 'consecutivo_actual': 10,
+            'resolucion_vigencia': '2028-10-26'}
+    assert avisos(base, hoy, vence_cert=date(2027, 6, 19)) == []
+    claves = lambda t, cert: [(a['clave'], a['nivel']) for a in avisos(t, hoy, vence_cert=cert)]
+    assert claves(base, date(2026, 12, 1)) == [('certificado', 'warning')]
+    assert claves(base, date(2026, 11, 1)) == [('certificado', 'danger')]
+    assert claves({**base, 'resolucion_vigencia': '2026-12-20'}, date(2027, 6, 19)) == [('resolucion', 'warning')]
+    assert claves({**base, 'consecutivo_actual': 85}, date(2027, 6, 19)) == [('rango', 'warning')]
+    assert claves({**base, 'consecutivo_actual': 100}, date(2027, 6, 19)) == [('rango', 'danger')]
+
+
+def test_el_portal_muestra_el_aviso_y_el_correo_diario_sale(admin, crear_tenant, monkeypatch):
+    import services.alertas as al
+    import services.entrega as en
+    t = crear_tenant(consecutivo_actual=90)
+    al._CACHE_AVISOS.clear()
+    html = admin.get(f"/ui/tenants/{t['id']}").data.decode('utf-8')
+    assert 'Ya usaste el 90 % de la numeración' in html
+    enviados = []
+    monkeypatch.setattr(en, 'enviar_smtp', lambda cfg, para, asunto, cuerpo, *a, **k: enviados.append((para, cuerpo)))
+    assert al.enviar_avisos_diarios() == {'enviados': 0, 'sin_correo': 1}     # sin correo configurado
+    import psycopg2.extras
+    from database import get_db_cursor
+    with get_db_cursor() as cur:
+        cur.execute("UPDATE tenants SET correo_entrega = %s WHERE id = %s",
+                    (psycopg2.extras.Json({'host': 'smtp.x.com', 'puerto': '587', 'remitente': 'a@x.com'}), t['id']))
+    assert al.enviar_avisos_diarios()['enviados'] == 1
+    assert enviados[0][0] == 'emisor@ejemplo.com' and '90 %' in enviados[0][1]

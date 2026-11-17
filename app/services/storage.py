@@ -63,6 +63,14 @@ class StorageManager:
         """Guarda el ApplicationResponse de la DIAN. Retorna la ruta absoluta."""
         return self._escribir_sin_pisar(f"{numero_factura}_response", response_bytes)
 
+    def guardar_contenedor(self, xml_bytes: bytes, numero_factura: str) -> str:
+        """Guarda el contenedor (AttachedDocument) entregado al comprador.
+
+        Cada entrega arma uno nuevo (otra hora y otra firma); ninguno se pisa,
+        así queda la constancia de lo que se envió cada vez.
+        """
+        return self._escribir_sin_pisar(f"{numero_factura}_contenedor", xml_bytes)
+
     def guardar_pdf(self, pdf_bytes: bytes, numero_factura: str) -> str:
         """Guarda el PDF de representación gráfica. Retorna la ruta absoluta. (Fase 2)"""
         path = self._get_doc_dir() / f"{numero_factura}.pdf"

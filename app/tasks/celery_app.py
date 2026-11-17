@@ -60,6 +60,12 @@ def make_celery(app_name: str = 'facturacion_dian') -> Celery:
                 'task':     'tasks.facturacion.reconciliar_facturas_procesando',
                 'schedule': 900.0,   # cada 15 minutos
             },
+            # Aviso diario al negocio: certificado o resolución por vencer, rango
+            # por agotarse (services/alertas.py). Cada 24 h desde que arranca.
+            'avisos-diarios': {
+                'task':     'tasks.facturacion.enviar_avisos_diarios',
+                'schedule': 86400.0,
+            },
         },
     )
 

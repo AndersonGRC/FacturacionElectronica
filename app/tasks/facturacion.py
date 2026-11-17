@@ -34,7 +34,8 @@ from lxml import etree
 
 from tasks.celery_app import celery_app
 from database import get_db_cursor
-from services.xml_builder import XMLBuilder, desglosar_linea
+from services.xml_builder import (XMLBuilder, desglosar_linea, documento_adquiriente,
+                                  es_responsable_iva)
 from services.signer import FirmadorDIAN
 from services.dian_client import DIANClient, es_documento_ya_procesado
 from services.storage import StorageManager
@@ -283,7 +284,7 @@ def procesar_factura(self, factura_id: str):
             # delega a xml_builder.desglosar_linea: era una copia paralela de la
             # misma fórmula y cualquier divergencia hace que el CUFE no calce con el
             # XML (rechazo de la DIAN).
-            responsable_iva = str(tenant.get('regimen_codigo') or '48') == '48'
+            responsable_iva = es_responsable_iva(tenant, datos)
             subtotal  = Decimal('0')
             total_iva = Decimal('0')
             for item in datos.get('items', []):
@@ -294,7 +295,8 @@ def procesar_factura(self, factura_id: str):
             total = subtotal + total_iva
 
             tipo_amb       = '2' if ambiente == 'habilitacion' else '1'
-            num_doc_recep  = datos.get('cliente', {}).get('numero_documento', '0')
+            # El mismo número que va en el XML (NIT sin DV, sin puntos).
+            num_doc_recep  = documento_adquiriente(datos.get('cliente', {}))[0] or '0'
 
             # CUFE (factura) usa la CLAVE TÉCNICA; CUDE (notas) usa el PIN del software.
             tipo_doc_actual = datos.get('tipo_documento', 'factura')
@@ -465,7 +467,11 @@ def procesar_factura(self, factura_id: str):
         )
 
         # ── Paso 11: Representación gráfica (PDF) — no debe romper el flujo ─────
+        # Solo de documentos ACEPTADOS: un PDF de un rechazado, con CUFE y QR,
+        # parece una factura válida y no lo es (FE-21).
         try:
+            if estado_final != 'ACEPTADA':
+                raise LookupError('rechazado: sin representación gráfica')
             from services.pdf_builder import generar_pdf
             pdf_bytes = generar_pdf(tenant, datos, numero_factura, cufe_final,
                                     fecha_emision, hora_emision, estado_final)
@@ -475,6 +481,12 @@ def procesar_factura(self, factura_id: str):
                             (pdf_path, factura_id))
         except Exception as e:
             logger.warning(f"No se pudo generar el PDF para {factura_id}: {e}")
+
+        # ── Paso 12: Entrega al comprador (solo producción, en otra tarea) ─────
+        # Si el correo falla, el documento sigue ACEPTADO: queda el evento y se
+        # reenvía desde el portal.
+        if estado_final == 'ACEPTADA' and ambiente == 'produccion':
+            _programar_entrega(factura_id)
 
         logger.info(f"Factura {factura_id} → {estado_final} ({numero_factura})")
         return {
@@ -530,6 +542,38 @@ def procesar_factura(self, factura_id: str):
         _registrar_evento(factura_id, 'ERROR',
                           f"Agotados 3 reintentos. Error final: {exc}")
         return {'status': 'error', 'factura_id': factura_id, 'error': str(exc)}
+
+
+def _programar_entrega(factura_id: str):
+    """Encola el envío al comprador; si no se puede encolar, lo deja anotado."""
+    try:
+        entregar_al_comprador.delay(factura_id)
+    except Exception as e:
+        logger.warning(f"No se pudo programar la entrega de {factura_id}: {e}")
+        _registrar_evento(factura_id, 'ENTREGA_FALLIDA',
+                          'No se pudo programar el envío al comprador; envíalo desde el '
+                          'detalle del documento.')
+
+
+@celery_app.task(bind=True, name='tasks.facturacion.entregar_al_comprador',
+                 max_retries=2, acks_late=True)
+def entregar_al_comprador(self, factura_id: str):
+    """Envía al comprador el documento aceptado (Anexo 1.9, numeral 9.1).
+
+    Si el servidor de correo no responde, reintenta a los 10 y a los 30 minutos.
+    """
+    from services.entrega import entregar_factura
+    resultado = entregar_factura(factura_id)
+    if resultado.get('reintentable') and self.request.retries < self.max_retries:
+        raise self.retry(countdown=[600, 1800][self.request.retries])
+    return resultado
+
+
+@celery_app.task(name='tasks.facturacion.enviar_avisos_diarios')
+def enviar_avisos_diarios():
+    """Correo diario a los negocios con el certificado o la resolución por vencer."""
+    from services.alertas import enviar_avisos_diarios as enviar
+    return enviar()
 
 
 def _registrar_evento(factura_id: str, evento: str, detalle: str = None):

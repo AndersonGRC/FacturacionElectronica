@@ -77,16 +77,25 @@ class FirmadorDIAN:
 
     # ── API pública ───────────────────────────────────────────────────────────
 
-    def firmar(self, xml_bytes: bytes) -> bytes:
-        root = etree.fromstring(xml_bytes)
+    def firmar(self, xml_bytes: bytes, minimo_extensiones: int = 2) -> bytes:
+        """Firma el documento en su último ext:ExtensionContent.
 
-        # 2º ExtensionContent (el 1º lleva DianExtensions) — ahí va la firma.
+        Factura y notas llevan 2 (DianExtensions + firma). El contenedor
+        electrónico (AttachedDocument) lleva solo el de la firma: se pasa
+        minimo_extensiones=1. Se conservan las secciones CDATA del contenedor
+        (el c14n las trata como texto, así que el digest no cambia).
+        """
+        root = etree.fromstring(xml_bytes, etree.XMLParser(strip_cdata=False))
+
+        # Último ExtensionContent (en factura, el 1º lleva DianExtensions) — ahí va la firma.
         ext_contents = root.findall(
             f'{{{NS_EXT}}}UBLExtensions'
             f'/{{{NS_EXT}}}UBLExtension'
             f'/{{{NS_EXT}}}ExtensionContent')
-        if len(ext_contents) < 2:
-            raise ValueError("Se esperaban 2 ext:ExtensionContent (DianExtensions + firma)")
+        if len(ext_contents) < minimo_extensiones:
+            raise ValueError(f"Se esperaban {minimo_extensiones} ext:ExtensionContent "
+                             "(DianExtensions + firma)" if minimo_extensiones > 1 else
+                             "Falta el ext:ExtensionContent de la firma")
         sig_holder = ext_contents[-1]
 
         # Digest del documento (referencia enveloped). La firma aún NO está en el

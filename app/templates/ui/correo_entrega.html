@@ -1,0 +1,130 @@
+{% extends "ui/base.html" %}
+{% block title %}Correo de entrega{% endblock %}
+{% block breadcrumb %}
+  {% if es_admin %}<a href="{{ url_for('ui.tenant_detalle', tenant_id=tenant.id) }}">{{ tenant.nombre }}</a> / {% endif %}Correo de entrega
+{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+<div class="col-lg-8">
+  <h5 class="fw-bold mb-1"><i class="bi bi-envelope-paper me-2"></i>Correo de entrega al comprador</h5>
+  <p class="text-muted small mb-3">
+    Cuando la DIAN acepta un documento, se le envía al comprador desde este correo: un archivo .zip
+    con el documento electrónico (XML) validado por la DIAN y su PDF. Así lo pide la DIAN
+    (Anexo Técnico 1.9, numeral 9.1).
+  </p>
+
+  {% if not columna %}
+  <div class="alert alert-danger small">
+    <i class="bi bi-database-exclamation me-1"></i>Falta actualizar la base de datos del portal para
+    guardar esta configuración. Avísale al administrador.
+  </div>
+  {% endif %}
+
+  <div class="alert small {% if cfg.activo and not faltan %}alert-success{% elif faltan %}alert-warning{% else %}alert-secondary{% endif %}">
+    {% if cfg.activo and not faltan %}
+      <i class="bi bi-check-circle me-1"></i><b>Envío automático encendido.</b>
+      {% if tenant.ambiente == 'produccion' %}Cada documento aceptado le llega al comprador.
+      {% else %}Mientras estés en pruebas (habilitación) no se le escribe a ningún comprador.{% endif %}
+    {% elif faltan %}
+      <i class="bi bi-exclamation-triangle me-1"></i><b>Falta configurar:</b> {{ faltan|join(', ') }}.
+      Mientras tanto los documentos no se le envían al comprador.
+    {% else %}
+      <i class="bi bi-pause-circle me-1"></i><b>Envío automático apagado.</b> Puedes enviar cada
+      documento a mano desde su detalle.
+    {% endif %}
+  </div>
+
+  <form method="POST" action="{{ url_for('ui.correo_entrega') }}" class="card p-3" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if es_admin %}<input type="hidden" name="tenant_id" value="{{ tenant.id }}">{% endif %}
+
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label for="remitente" class="form-label small fw-semibold">Correo remitente</label>
+        <input type="email" id="remitente" name="remitente" class="form-control form-control-sm"
+               value="{{ cfg.remitente or '' }}" placeholder="facturas@tunegocio.com" maxlength="150">
+        <div class="form-text">Debe ser una cuenta tuya. Las respuestas del comprador te llegan aquí.</div>
+      </div>
+      <div class="col-md-6">
+        <label for="nombre" class="form-label small fw-semibold">Nombre que verá el comprador</label>
+        <input type="text" id="nombre" name="nombre" class="form-control form-control-sm"
+               value="{{ cfg.nombre or tenant.nombre or '' }}" maxlength="100">
+      </div>
+
+      <div class="col-md-6">
+        <label for="host" class="form-label small fw-semibold">Servidor de correo (SMTP)</label>
+        <input type="text" id="host" name="host" class="form-control form-control-sm font-monospace"
+               value="{{ cfg.host or '' }}" placeholder="smtp.gmail.com" maxlength="253">
+      </div>
+      <div class="col-md-3">
+        <label for="puerto" class="form-label small fw-semibold">Puerto</label>
+        <input type="text" id="puerto" name="puerto" inputmode="numeric" class="form-control form-control-sm"
+               value="{{ cfg.puerto or '587' }}" maxlength="5">
+      </div>
+      <div class="col-md-3">
+        <label for="seguridad" class="form-label small fw-semibold">Seguridad</label>
+        <select id="seguridad" name="seguridad" class="form-select form-select-sm">
+          <option value="starttls" {% if (cfg.seguridad or 'starttls') == 'starttls' %}selected{% endif %}>STARTTLS (587)</option>
+          <option value="ssl" {% if cfg.seguridad == 'ssl' %}selected{% endif %}>SSL/TLS (465)</option>
+        </select>
+      </div>
+
+      <div class="col-md-6">
+        <label for="usuario" class="form-label small fw-semibold">Usuario</label>
+        <input type="text" id="usuario" name="usuario" class="form-control form-control-sm"
+               value="{{ cfg.usuario or '' }}" placeholder="normalmente, el mismo correo" maxlength="150"
+               autocomplete="off">
+      </div>
+      <div class="col-md-6">
+        <label for="password" class="form-label small fw-semibold">Contraseña</label>
+        <input type="password" id="password" name="password" class="form-control form-control-sm"
+               placeholder="{{ 'Guardada · déjala vacía para no cambiarla' if cfg.password_cifrada else 'Contraseña de aplicación' }}"
+               autocomplete="new-password">
+        {% if cfg.password_cifrada %}
+        <div class="form-check mt-1">
+          <input class="form-check-input" type="checkbox" name="borrar_password" value="1" id="borrar_password">
+          <label class="form-check-label small" for="borrar_password">Borrar la contraseña guardada</label>
+        </div>
+        {% endif %}
+        <div class="form-text">Se guarda cifrada y nunca se vuelve a mostrar.</div>
+      </div>
+
+      <div class="col-12">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" role="switch" name="activo" value="1" id="activo"
+                 {% if cfg.activo %}checked{% endif %}>
+          <label class="form-check-label fw-semibold" for="activo">
+            Enviar automáticamente cada documento aceptado por la DIAN
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="d-flex flex-wrap gap-2 mt-3">
+      <button type="submit" name="accion" value="guardar" class="btn btn-primary btn-sm" {% if not columna %}disabled{% endif %}>
+        <i class="bi bi-save me-1"></i>Guardar
+      </button>
+      <button type="submit" name="accion" value="probar" class="btn btn-outline-primary btn-sm" {% if not columna %}disabled{% endif %}>
+        <i class="bi bi-send-check me-1"></i>Guardar y enviarme una prueba
+      </button>
+    </div>
+  </form>
+
+  <div class="card mt-3">
+    <div class="card-body small">
+      <div class="fw-semibold mb-2"><i class="bi bi-info-circle me-1"></i>Datos de los correos más usados</div>
+      <ul class="mb-2">
+        <li><b>Gmail / Google Workspace:</b> smtp.gmail.com · 587 · STARTTLS. Necesitas una
+          «contraseña de aplicación» (Cuenta de Google → Seguridad → Verificación en dos pasos).</li>
+        <li><b>Outlook / Microsoft 365:</b> smtp.office365.com · 587 · STARTTLS.</li>
+        <li><b>Zoho:</b> smtp.zoho.com · 465 · SSL/TLS.</li>
+        <li><b>Correo de tu hosting:</b> pídele a tu proveedor el servidor SMTP, el puerto y la seguridad.</li>
+      </ul>
+      <div class="text-muted">Si el comprador no da correo, el documento no se envía: en su detalle puedes
+        descargar el paquete (.zip) o el PDF y entregárselo por otro medio.</div>
+    </div>
+  </div>
+</div>
+</div>
+{% endblock %}

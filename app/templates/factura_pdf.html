@@ -209,7 +209,13 @@
           <tr class="linea"><td class="etiqueta" style="width: 42%;">Subtotal</td><td class="r">{{ bruto }}</td></tr>
           <tr class="linea"><td class="etiqueta">Descuentos</td><td class="r">{{ descuentos }}</td></tr>
           <tr class="linea"><td class="etiqueta">Base gravable</td><td class="r">{{ subtotal }}</td></tr>
-          <tr class="linea"><td class="etiqueta">{% if responsable_iva %}IVA 19 %{% else %}IVA (no resp.){% endif %}</td><td class="r">{{ iva }}</td></tr>
+          {% if responsable_iva and ivas %}
+            {% for etiqueta, valor in ivas %}
+          <tr class="linea"><td class="etiqueta">{{ etiqueta|nb }}</td><td class="r">{{ valor }}</td></tr>
+            {% endfor %}
+          {% else %}
+          <tr class="linea"><td class="etiqueta">{% if responsable_iva %}IVA{% else %}IVA (no resp.){% endif %}</td><td class="r">{{ iva }}</td></tr>
+          {% endif %}
           <tr class="total">
             <td style="vertical-align: middle;"><span class="total-rotulo">{{ 'TOTAL A PAGAR' if not es_nota else 'TOTAL NOTA' }}</span></td>
             <td class="r"><span class="total-valor">{{ total|nb }}</span></td>

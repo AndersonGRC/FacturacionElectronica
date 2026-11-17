@@ -971,7 +971,11 @@ def _csrf_en_plantillas():
     """El token queda disponible en todas las plantillas del portal."""
     if not has_request_context() or not (request.blueprint == 'ui'):
         return {}
-    return {'csrf_token': _csrf_token()}
+    # Avisos de certificado, resolución y rango (services/alertas.py): al negocio
+    # en todo su portal; al administrador, en la ficha del cliente que mira.
+    from services.alertas import avisos_de
+    tenant_id = _tenant_id_scope() or (request.view_args or {}).get('tenant_id')
+    return {'csrf_token': _csrf_token(), 'avisos_fe': avisos_de(tenant_id)}
 
 
 # ── Emisión autoservicio (rol tenant) ──────────────────────────────────────────
@@ -1119,6 +1123,109 @@ def config_envio():
                            presets=PRESETS_ENVIO, csrf_token=_csrf_token())
 
 
+# ── Correo de entrega al comprador (Anexo 1.9, numeral 9.1) ──────────────────
+
+_HOST_SMTP = re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?'
+                        r'(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?)+$')
+
+
+def _tenant_para_correo():
+    """El cliente configura el suyo; el admin, el del cliente que elija."""
+    return _tenant_id_scope() or (request.values.get('tenant_id') or '').strip() or None
+
+
+@ui_bp.route('/correo-entrega', methods=['GET', 'POST'])
+@_login_tenant_o_admin
+def correo_entrega():
+    """Correo del negocio desde el que se le envía cada documento al comprador."""
+    import psycopg2.extras
+    from services.entrega import (SEGURIDADES, correo_valido, enviar_prueba,
+                                  faltantes_config, leer_config, _mensaje_error)
+    tenant_id = _tenant_para_correo()
+    if not tenant_id:
+        flash('Elige el cliente cuyo correo quieres configurar.', 'warning')
+        return redirect(url_for('ui.tenants'))
+    try:
+        uuid.UUID(str(tenant_id))
+    except ValueError:
+        flash('Cliente no encontrado.', 'danger')
+        return redirect(url_for('ui.tenants'))
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT * FROM tenants WHERE id = %s", (tenant_id,))
+        t = cur.fetchone()
+    if not t:
+        flash('Cliente no encontrado.', 'danger')
+        return redirect(url_for('ui.tenants'))
+    t = dict(t)
+    columna = 'correo_entrega' in t
+    cfg = leer_config(t)
+    es_admin = _tenant_id_scope() is None
+    volver = url_for('ui.correo_entrega', **({'tenant_id': tenant_id} if es_admin else {}))
+
+    if request.method == 'POST':
+        if not columna:
+            flash('Falta actualizar la base de datos del portal (columna correo_entrega). '
+                  'Avísale al administrador.', 'danger')
+            return redirect(volver)
+        f = request.form
+        nuevo = {
+            'host': (f.get('host') or '').strip().lower(),
+            'puerto': (f.get('puerto') or '').strip(),
+            'seguridad': f.get('seguridad') if f.get('seguridad') in SEGURIDADES else 'starttls',
+            'usuario': (f.get('usuario') or '').strip(),
+            'remitente': (f.get('remitente') or '').strip(),
+            'nombre': ' '.join((f.get('nombre') or '').split())[:100],
+            'activo': f.get('activo') == '1',
+            'password_cifrada': cfg.get('password_cifrada'),
+        }
+        errores = []
+        if nuevo['host'] and not _HOST_SMTP.match(nuevo['host']):
+            errores.append('El servidor de correo no es válido (ejemplo: smtp.gmail.com).')
+        if nuevo['puerto'] and not (nuevo['puerto'].isdigit() and 1 <= int(nuevo['puerto']) <= 65535):
+            errores.append('El puerto debe ser un número (normalmente 587 o 465).')
+        if nuevo['remitente'] and not correo_valido(nuevo['remitente']):
+            errores.append('El correo remitente no es válido.')
+        clave = f.get('password') or ''
+        if f.get('borrar_password') == '1':
+            nuevo['password_cifrada'] = None
+        elif clave:
+            try:
+                nuevo['password_cifrada'] = cifrar(clave)
+            except RuntimeError:
+                errores.append('El portal no puede guardar contraseñas cifradas (falta '
+                               'FERNET_KEY). Avísale al administrador.')
+        if nuevo['activo'] and faltantes_config(nuevo):
+            errores.append('Para encender el envío automático completa: '
+                           + ', '.join(faltantes_config(nuevo)) + '.')
+        if errores:
+            for e in errores:
+                flash(e, 'danger')
+            nuevo['password_cifrada'] = cfg.get('password_cifrada')
+            return render_template('ui/correo_entrega.html', cfg=nuevo, tenant=t,
+                                   columna=columna, faltan=faltantes_config(nuevo),
+                                   es_admin=es_admin, csrf_token=_csrf_token())
+        with get_db_cursor() as cur:
+            cur.execute("UPDATE tenants SET correo_entrega = %s WHERE id = %s",
+                        (psycopg2.extras.Json(nuevo), tenant_id))
+        flash('Correo de entrega guardado.', 'success')
+        if f.get('accion') == 'probar':
+            falta = faltantes_config(nuevo)
+            if falta:
+                flash('Para probar completa: ' + ', '.join(falta) + '.', 'warning')
+            else:
+                try:
+                    enviar_prueba(nuevo, t)
+                    flash(f"Correo de prueba enviado a {nuevo['remitente']}. Revisa la bandeja "
+                          "de entrada y la de spam.", 'success')
+                except Exception as e:
+                    flash('No se pudo enviar la prueba: ' + _mensaje_error(e, nuevo), 'danger')
+        return redirect(volver)
+
+    return render_template('ui/correo_entrega.html', cfg=cfg, tenant=t, columna=columna,
+                           faltan=faltantes_config(cfg), es_admin=es_admin,
+                           csrf_token=_csrf_token())
+
+
 @ui_bp.route('/catalogo')
 @_login_tenant
 def catalogo_json():
@@ -1211,7 +1318,86 @@ def pruebas():
                 GROUP BY 1""", (sel,))
             progreso = {r['tipo']: r['n'] for r in cur.fetchall()}
     return render_template('ui/set_pruebas.html', tenants=tenants, sel=sel,
-                           progreso=progreso or {}, csrf_token=_csrf_token())
+                           progreso=progreso or {}, csrf_token=_csrf_token(),
+                           casos_ampliados=[nombre for nombre, _datos in _casos_ampliados()])
+
+
+def _casos_ampliados():
+    """Facturas que el set original no probó (FE-09, FE-10, FE-11).
+
+    El set de junio solo tuvo cantidad 1, sin descuento, comprador con cédula y
+    un solo IVA. Cada caso lleva su nombre en la nota para leer el resultado.
+    `prueba_responsable_iva` solo vale en habilitación: deja probar tarifas de
+    IVA aunque el emisor real no sea responsable de IVA.
+    """
+    marca = int(time.time())
+    natural = {'tipo_persona': 'natural', 'tipo_documento': 'CC',
+               'numero_documento': '1098765432', 'nombre': 'Cliente Prueba DIAN',
+               'email': 'prueba@ejemplo.com', 'telefono': '3001234567',
+               'direccion': 'Calle 1 2-3', 'municipio_codigo': '11001'}
+    empresa = {'tipo_persona': 'juridica', 'tipo_documento': 'NIT',
+               'numero_documento': '900108281', 'nombre': 'Empresa Prueba DIAN SAS',
+               'email': 'compras@ejemplo.com', 'telefono': '6045551234',
+               'direccion': 'Carrera 43A 1-50', 'municipio_codigo': '05001',
+               'regimen': '48', 'responsabilidades': 'O-13'}
+
+    def item(desc, cant, precio, iva=19, codigo='CASO', **extra):
+        return {'descripcion': desc, 'cantidad': cant, 'precio_unitario': precio,
+                'impuesto_iva': iva, 'codigo_unidad': extra.pop('unidad', 'EA'),
+                'codigo': codigo, **extra}
+
+    casos = [
+        ('Cantidad mayor a 1 con descuento',
+         natural, [item('Producto x3 con 10 % de descuento', 3, 12000, descuento=3600)], {}),
+        ('Cantidad con decimales (1,5 kg)',
+         natural, [item('Producto a granel', 1.5, 8000, unidad='KGM')], {}),
+        ('Varias líneas, una con descuento',
+         natural, [item('Línea A', 2, 5000, codigo='A'),
+                   item('Línea B', 1, 20000, codigo='B', descuento=2000),
+                   item('Línea C', 4, 1500, codigo='C')], {}),
+        ('Comprador empresa con NIT (DV calculado), responsable de IVA, Medellín',
+         empresa, [item('Servicio a empresa', 1, 150000)], {}),
+        ('Comprador con NIT escrito con guion (900108281-x)',
+         {**empresa, 'numero_documento': '900108281-0'}, [item('Producto', 2, 30000)], {}),
+        ('IVA mixto 0 %, 5 % y 19 % (simula emisor responsable de IVA)',
+         natural, [item('Exento', 1, 10000, iva=0, codigo='E0'),
+                   item('Tarifa 5 %', 2, 10000, iva=5, codigo='T5'),
+                   item('Tarifa 19 %', 1, 10000, iva=19, codigo='T19')],
+         {'prueba_responsable_iva': True}),
+        ('Precio con IVA incluido (simula emisor responsable de IVA)',
+         empresa, [item('Precio final $11.900', 1, 11900, precio_incluye_iva=True)],
+         {'prueba_responsable_iva': True}),
+    ]
+    salida = []
+    for i, (nombre, cliente, items, extra) in enumerate(casos, start=1):
+        datos = {'referencia_pedido': f'SETP-AMP-{marca}-{i}', 'tipo_documento': 'factura',
+                 'metodo_pago': '10', 'moneda': 'COP',
+                 'notas': f'Caso ampliado {i}/{len(casos)}: {nombre}',
+                 'cliente': dict(cliente), 'items': items, **extra}
+        salida.append((nombre, datos))
+    return salida
+
+
+@ui_bp.route('/pruebas/ampliado', methods=['POST'])
+@_login_admin
+def pruebas_ampliado():
+    """Envía los casos ampliados a la DIAN (solo emisores en habilitación)."""
+    tenant_id = request.form.get('tenant_id')
+    if not _en_habilitacion(tenant_id):
+        flash(MSG_PRUEBAS_SOLO_HABILITACION, 'danger')
+        return redirect(url_for('ui.pruebas'))
+    enviados, errores = 0, []
+    for nombre, datos in _casos_ampliados():
+        try:
+            _emitir_y_enviar(tenant_id, datos)
+            enviados += 1
+        except EmisionError as e:
+            errores.append(f'{nombre}: {e.mensaje}')
+    flash(f'Casos ampliados enviados a la DIAN (habilitación): {enviados}. Revisa el monitor: '
+          'cada documento dice en su nota qué caso es.', 'success' if not errores else 'warning')
+    for e in errores:
+        flash(e, 'danger')
+    return redirect(url_for('ui.facturas', tenant_id=tenant_id))
 
 
 @ui_bp.route('/pruebas/lote', methods=['POST'])
@@ -1375,7 +1561,7 @@ def factura_detalle(factura_id):
 
     with get_db_cursor(dict_cursor=True) as cur:
         cur.execute("""
-            SELECT f.*, t.nombre AS tenant_nombre
+            SELECT f.*, t.nombre AS tenant_nombre, t.ambiente AS tenant_ambiente
             FROM facturas f JOIN tenants t ON t.id = f.tenant_id
             WHERE f.id = %s
         """, (factura_id,))
@@ -1411,9 +1597,12 @@ def factura_detalle(factura_id):
         ev = dict(ev)
         ev['creado_en'] = ev['creado_en'].strftime('%H:%M:%S %d/%m')
         eventos.append(ev)
+    # Último intento de entrega al comprador (enviada, pendiente o fallida).
+    entrega = next((e for e in reversed(eventos)
+                    if e['evento'] in ('ENTREGADA', 'ENTREGA', 'ENTREGA_FALLIDA')), None)
 
     return render_template('ui/factura_detalle.html',
-                           factura=factura, eventos=eventos,
+                           factura=factura, eventos=eventos, entrega=entrega,
                            csrf_token=_csrf_token(),
                            es_tenant=(tenant_scope is not None))
 
@@ -1516,6 +1705,27 @@ def factura_enviar_ahora(factura_id):
     return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
 
 
+@ui_bp.route('/facturas/<factura_id>/entregar', methods=['POST'])
+@_login_tenant_o_admin
+def factura_entregar(factura_id):
+    """Envía (o reenvía) el documento aceptado al comprador.
+
+    En habilitación llega al correo del propio negocio, nunca al comprador.
+    """
+    from services.entrega import entregar_factura
+    scope = _tenant_id_scope()
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("SELECT tenant_id FROM facturas WHERE id = %s", (factura_id,))
+        f = cur.fetchone()
+    if not f or (scope and str(f['tenant_id']) != scope):
+        flash('No autorizado.', 'danger')
+        return redirect(url_for('ui.facturas'))
+    r = entregar_factura(factura_id, manual=True)
+    nivel = {'enviada': 'success', 'sin_correo': 'warning', 'sin_config': 'warning'}
+    flash(r['mensaje'], nivel.get(r['estado'], 'danger'))
+    return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
+
+
 @ui_bp.route('/facturas/<factura_id>/archivo/<tipo>')
 @_login_tenant_o_admin
 def descargar_archivo(factura_id, tipo):
@@ -1534,6 +1744,18 @@ def descargar_archivo(factura_id, tipo):
 
     if tenant_scope and str(f['tenant_id']) != tenant_scope:
         return 'No autorizado', 403
+
+    if tipo == 'paquete':
+        # El mismo .zip que se envía por correo, para entregarlo por otro medio.
+        import io
+        from services.entrega import paquete_para_descargar
+        try:
+            datos_zip, nombre_zip = paquete_para_descargar(factura_id)
+        except Exception as e:      # contenedor, certificado o archivos faltantes
+            flash(f'No se pudo armar el paquete: {str(e)[:200]}', 'danger')
+            return redirect(url_for('ui.factura_detalle', factura_id=factura_id))
+        return send_file(io.BytesIO(datos_zip), as_attachment=True,
+                         download_name=nombre_zip, mimetype='application/zip')
 
     if tipo == 'pdf':
         path, suffix = f.get('pdf_path'), '.pdf'

@@ -47,6 +47,15 @@ def _limpiar(_esquema):
     yield
 
 
+@pytest.fixture(autouse=True)
+def entregas_programadas(_esquema, monkeypatch):
+    """La entrega al comprador va por Celery: en las pruebas solo se anota."""
+    import tasks.facturacion as tf
+    programadas = []
+    monkeypatch.setattr(tf, '_programar_entrega', programadas.append)
+    return programadas
+
+
 @pytest.fixture
 def crear_tenant():
     """Crea un emisor de prueba. Por defecto: habilitación, rango 1-100, vigente."""

@@ -18,6 +18,8 @@ from pathlib import Path
 
 import qrcode
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from services.xml_builder import desglosar_linea, documento_adquiriente, es_responsable_iva
 from xhtml2pdf import pisa
 
 _TPL_DIR = Path(__file__).parent.parent / 'templates'
@@ -269,18 +271,19 @@ def generar_pdf(tenant: dict, datos: dict, numero: str, cufe: str,
     tipo = datos.get('tipo_documento', 'factura')
     if tipo not in TITULOS:
         tipo = 'factura'
-    responsable_iva = str(tenant.get('regimen_codigo') or '48') == '48'
+    responsable_iva = es_responsable_iva(tenant, datos)
 
-    # Detalle y totales
+    # Detalle y totales: el MISMO desglose del XML (desglosar_linea). Antes el PDF
+    # calculaba aparte y, con precio que incluye IVA, mostraba otros totales (FE-08).
     items, subtotal, total_iva = [], Decimal('0'), Decimal('0')
     bruto, descuentos = Decimal('0'), Decimal('0')
+    iva_por_tarifa = {}
     for it in datos.get('items', []):
-        cant = _d(it.get('cantidad', 1)); precio = _d(it.get('precio_unitario', 0))
-        desc = _d(it.get('descuento', 0))
-        iva_pct = _d(it.get('impuesto_iva', 19)) if responsable_iva else Decimal('0')
-        base = _d(cant * precio - desc)
-        iva_val = _d(base * iva_pct / Decimal('100'))
+        ln = desglosar_linea(it, responsable_iva)
+        cant, precio, desc = ln['cantidad'], ln['precio'], ln['descuento']
+        iva_pct, base, iva_val = ln['iva_pct'], ln['base'], ln['iva']
         subtotal += base; total_iva += iva_val
+        iva_por_tarifa[iva_pct] = iva_por_tarifa.get(iva_pct, Decimal('0')) + iva_val
         bruto += _d(cant * precio); descuentos += desc
         unidad = str(it.get('unidad_medida') or it.get('unidad') or '94')
         items.append({
@@ -300,6 +303,9 @@ def generar_pdf(tenant: dict, datos: dict, numero: str, cufe: str,
     logo = _logo_data_uri(tenant.get('logo_url') or '')
     logo_ancho = _ancho_logo(logo, alto=66, maximo=260)
     doc_tipo = str(cliente.get('tipo_documento', 'CC'))
+    doc_numero, doc_dv, _codigo = documento_adquiriente(cliente)
+    if doc_dv is not None:
+        doc_numero = f'{doc_numero}-{doc_dv}'
     vencimiento = datos.get('fecha_vencimiento') or ''
     credito = bool(vencimiento) or str(datos.get('forma_pago', '1')) == '2'
 
@@ -334,9 +340,9 @@ def generar_pdf(tenant: dict, datos: dict, numero: str, cufe: str,
         },
         'adquiriente': {
             'nombre': cliente.get('nombre', 'Consumidor Final'),
-            'doc': f"{cliente.get('tipo_documento','CC')} {cliente.get('numero_documento','')}",
+            'doc': f"{cliente.get('tipo_documento','CC')} {doc_numero}",
             'doc_tipo': TIPO_DOC.get(doc_tipo, doc_tipo),
-            'doc_numero': cliente.get('numero_documento', ''),
+            'doc_numero': doc_numero,
             'tipo_persona': {'natural': 'natural', 'juridica': 'jurídica', '1': 'jurídica',
                              '2': 'natural'}.get(str(cliente.get('tipo_persona', '')).lower(), ''),
             'ciudad': cliente.get('municipio_nombre') or cliente.get('ciudad', ''),
@@ -355,6 +361,9 @@ def generar_pdf(tenant: dict, datos: dict, numero: str, cufe: str,
         'concepto': datos.get('concepto_nota', {}) or {},
         'items': items,
         'subtotal': _money(subtotal), 'iva': _money(total_iva), 'total': _money(total),
+        # Una fila por tarifa, igual que los subtotales de IVA del XML.
+        'ivas': [(f"IVA {p.normalize():f} %", _money(v))
+                 for p, v in sorted(iva_por_tarifa.items()) if p > 0] if responsable_iva else [],
         'moneda': datos.get('moneda', 'COP'),
         'metodo_pago': METODO_PAGO.get(str(datos.get('metodo_pago', '10')), 'Otro'),
         'notas': datos.get('notas', ''),

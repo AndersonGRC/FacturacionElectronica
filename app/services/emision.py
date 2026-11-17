@@ -78,6 +78,39 @@ def validar(datos: dict):
                                "(la factura electrónica que ajustan).")
 
 
+def _validar_referencia_de_nota(tenant_id, datos: dict):
+    """Una nota solo ajusta una factura ACEPTADA de este mismo emisor (FE-20).
+
+    Antes se aceptaba cualquier número y CUFE, y la fecha de la factura referida
+    era la de creación del registro, no la de emisión. Aquí se comprueba contra
+    la base y la fecha se toma del XML que la DIAN validó (cbc:IssueDate).
+    """
+    if datos.get('tipo_documento', 'factura') not in ('nota_credito', 'nota_debito'):
+        return
+    ref = datos.get('documento_referencia') or {}
+    with get_db_cursor(dict_cursor=True) as cur:
+        cur.execute("""SELECT estado, xml_path, COALESCE(datos_json->>'tipo_documento', 'factura') AS tipo
+                       FROM facturas WHERE tenant_id = %s AND numero_factura = %s AND cufe = %s""",
+                    (str(tenant_id), str(ref.get('numero')), str(ref.get('cufe'))))
+        factura = cur.fetchone()
+    if not factura or factura['tipo'] != 'factura':
+        raise EmisionError("La factura que ajusta esta nota no existe en tu facturación. "
+                           "Revisa el número y el CUFE.")
+    if factura['estado'] != 'ACEPTADA':
+        raise EmisionError("Solo se puede hacer una nota sobre una factura aceptada por la DIAN.")
+    try:
+        from pathlib import Path
+        from lxml import etree
+        raiz = etree.fromstring(Path(factura['xml_path']).read_bytes())
+        fecha = raiz.findtext(
+            '{urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2}IssueDate')
+        if fecha:
+            ref['fecha'] = fecha.strip()
+            datos['documento_referencia'] = ref
+    except Exception:  # noqa: BLE001
+        pass          # sin el archivo se conserva la fecha que venía
+
+
 def emitir_documento(tenant_id, datos: dict, *, delay_seconds: int = None,
                      requiere_aprobacion: bool = False) -> dict:
     """
@@ -107,6 +140,8 @@ def emitir_documento(tenant_id, datos: dict, *, delay_seconds: int = None,
             'procesar_en': None,
             'mensaje': "Ya existe un documento para esta referencia de pedido.",
         }
+
+    _validar_referencia_de_nota(tenant_id, datos)
 
     if delay_seconds is None:
         delay_seconds = int(os.getenv('DELAY_DIAS', '2')) * 86400

@@ -186,6 +186,11 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_activo            BOOLEAN  N
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_intentos_fallidos SMALLINT NOT NULL DEFAULT 0;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS portal_bloqueado_hasta   TIMESTAMPTZ;
 
+-- Tenants: correo del negocio para entregar cada documento al comprador
+-- (Anexo 1.9, numeral 9.1). JSON: host, puerto, seguridad, usuario,
+-- password_cifrada (Fernet), remitente, nombre, activo.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS correo_entrega JSONB DEFAULT '{}'::jsonb;
+
 -- Facturas: representación gráfica, set de pruebas y aprobación manual
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS pdf_path            VARCHAR(500);
 ALTER TABLE facturas ADD COLUMN IF NOT EXISTS zip_key             VARCHAR(100);

@@ -88,5 +88,28 @@
       </form>
     </div>
   </div>
+
+  <!-- Casos ampliados (FE-09) -->
+  <div class="col-12">
+    <div class="card p-3">
+      <h6 class="fw-bold text-primary"><i class="bi bi-ui-checks me-1"></i>Casos ampliados</h6>
+      <p class="small text-muted mb-2">
+        Envía a la DIAN (habilitación, sin validez fiscal) {{ casos_ampliados|length }} facturas que
+        prueban lo que el set original no cubrió. El resultado de cada una queda en el monitor
+        con el nombre del caso.
+      </p>
+      <ol class="small mb-3">
+        {% for c in casos_ampliados %}<li>{{ c }}</li>{% endfor %}
+      </ol>
+      <form method="POST" action="{{ url_for('ui.pruebas_ampliado') }}"
+            onsubmit="return confirm('¿Enviar los {{ casos_ampliados|length }} casos a la DIAN (habilitación)?')">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="tenant_id" value="{{ sel }}">
+        <button class="btn btn-primary btn-sm" {% if not sel %}disabled{% endif %}>
+          <i class="bi bi-send-check me-1"></i>Enviar casos ampliados
+        </button>
+      </form>
+    </div>
+  </div>
 </div>
 {% endblock %}

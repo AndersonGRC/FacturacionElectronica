@@ -137,6 +137,51 @@
       </ul>
     </div>
 
+    <!-- Entrega al comprador (Anexo 1.9, numeral 9.1) -->
+    {% set pruebas = factura.tenant_ambiente != 'produccion' %}
+    <div class="card mb-3">
+      <div class="card-header bg-white fw-semibold d-flex align-items-center">
+        <i class="bi bi-envelope-paper me-2"></i>Entrega al comprador
+        <a class="ms-auto small fw-normal"
+           href="{{ url_for('ui.correo_entrega', tenant_id=(None if es_tenant else factura.tenant_id)) }}">
+          <i class="bi bi-gear me-1"></i>Correo de entrega
+        </a>
+      </div>
+      <div class="card-body small">
+        {% if factura.estado != 'ACEPTADA' %}
+          <span class="text-muted">Se le envía al comprador cuando la DIAN acepte el documento.</span>
+        {% else %}
+          {% if entrega %}
+          <div class="alert py-2 mb-2 {% if entrega.evento == 'ENTREGADA' %}alert-success{% elif entrega.evento == 'ENTREGA' %}alert-warning{% else %}alert-danger{% endif %}">
+            {{ entrega.detalle }} <span class="text-muted">({{ entrega.creado_en }})</span>
+          </div>
+          {% elif pruebas %}
+          <p class="text-muted mb-2">En pruebas (habilitación) no se le escribe al comprador. Con el botón
+            te llega a ti, al correo de entrega del negocio, para que veas cómo queda.</p>
+          {% else %}
+          <p class="text-muted mb-2">Aún no se ha enviado.</p>
+          {% endif %}
+          <div class="d-flex flex-wrap gap-2">
+            <form method="POST" action="{{ url_for('ui.factura_entregar', factura_id=factura.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="btn btn-sm btn-primary">
+                <i class="bi bi-send me-1"></i>
+                {% if pruebas %}Enviarme una prueba{% elif entrega and entrega.evento == 'ENTREGADA' %}Reenviar al comprador{% else %}Enviar al comprador{% endif %}
+              </button>
+            </form>
+            <a class="btn btn-sm btn-outline-secondary"
+               href="{{ url_for('ui.descargar_archivo', factura_id=factura.id, tipo='paquete') }}">
+              <i class="bi bi-file-zip me-1"></i>Descargar paquete (.zip)
+            </a>
+          </div>
+          <div class="text-muted mt-2" style="font-size:.75rem">
+            El paquete trae el documento electrónico validado por la DIAN y el PDF. Sirve para
+            entregarlo por otro medio si el comprador no dio correo.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
     <!-- JSON payload -->
     <div class="card">
       <div class="card-header bg-white fw-semibold" role="button"
